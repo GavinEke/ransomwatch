@@ -11,9 +11,6 @@ const elements = {
   emptyCopy: document.querySelector("#empty-copy"),
   tableWrap: document.querySelector("#table-wrap"),
   rows: document.querySelector("#victim-rows"),
-  reviewSection: document.querySelector("#review-section"),
-  reviewSummary: document.querySelector("#review-summary"),
-  reviewRows: document.querySelector("#review-rows"),
   search: document.querySelector("#search-input"),
   group: document.querySelector("#group-filter"),
   country: document.querySelector("#country-filter"),
@@ -61,13 +58,31 @@ function sourceCount(status) {
   return (dataset?.sources || []).filter((source) => source.status === status).length;
 }
 
+function usableOrganizationName(value) {
+  const name = String(value || "").replace(/[\[\]*_`~]/g, "").trim();
+  if (!/[\p{L}\p{N}]/u.test(name)) return false;
+  return !/^(?:n\/?a|unknown|unidentified|not available|none|null)$/i.test(name);
+}
+
+function displayedOrganization(item) {
+  if (usableOrganizationName(item.organization)) return item.organization.trim();
+  if (usableOrganizationName(item.post_title)) return item.post_title.trim();
+  return "";
+}
+
 function postType(item) {
-  if (["victim", "headline", "review"].includes(item.post_type)) return item.post_type;
-  // Older schema files have no post_type. Keep them readable and apply the
-  // same obvious headline exclusions until the next collector migration.
+  if (["headline", "review"].includes(item.post_type)) return item.post_type;
+  // Old or malformed data can label a punctuation-only placeholder as a
+  // victim. Keep those records in the data, but out of victim totals.
+  if (item.post_type === "victim") {
+    if (usableOrganizationName(item.organization)) return "victim";
+    if (item.organization && !usableOrganizationName(item.organization)) return "review";
+  }
+  // Older schema files may lack both a type and a normalized organization.
+  // Reclassify their title using the same obvious headline exclusions.
   const title = String(item.post_title || item.organization || "").trim().toLocaleLowerCase();
   const normalizedTitle = title.replace(/[\[\]*_`~]/g, "").replace(/\s+/g, " ").trim();
-  if (!/[\p{L}\p{N}]/u.test(normalizedTitle)) return "headline";
+  if (!usableOrganizationName(normalizedTitle)) return "review";
   if (["welcome", "important announcement", "home", "about", "contact", "news", "blog", "victims", "victim list", "recent victims", "all victims", "load more", "read more", "why it matters", "what is stored", "warning", "press", "notice", "jurisdiction", "cooperation reached"].includes(normalizedTitle)) return "headline";
   if (/^announcement\s+(for|about)\b/.test(normalizedTitle)) return "review";
   if (/^(view all|load more|read more|what time does|what time is|response to |publication hold|press release|statement:|article:|why it matters|what is stored|warning:|notice:|jurisdiction:|cooperation reached)/.test(normalizedTitle)) return "headline";
@@ -77,10 +92,6 @@ function postType(item) {
 
 function victimSightings() {
   return (dataset?.sightings || []).filter((item) => postType(item) === "victim");
-}
-
-function reviewSightings() {
-  return (dataset?.sightings || []).filter((item) => postType(item) !== "victim");
 }
 
 function populateSelect(select, values, firstLabel) {
@@ -220,32 +231,30 @@ function appendClaimDetails(cell, item) {
     ["Claimed deadline", details.deadline],
     ["Organization website shown", details.organization_website],
   );
-  const visibleEntries = entries.filter((entry) => typeof entry[1] === "string" && entry[1].trim());
+  const visibleEntries = entries.filter((entry) => {
+    if (typeof entry[1] !== "string" || !entry[1].trim()) return false;
+    return !/^(?:[-—–]+|n\/?a|unknown|none|null)$/i.test(entry[1].trim());
+  });
+  if (!visibleEntries.length) return;
+
   const disclosure = document.createElement("details");
   const summary = document.createElement("summary");
   summary.textContent = "View note and listing details";
   disclosure.append(summary);
-  if (visibleEntries.length) {
-    const list = document.createElement("dl");
-    list.className = "claim-details-list";
-    for (const [label, value] of visibleEntries) {
-      const term = document.createElement("dt");
-      term.textContent = label;
-      const description = document.createElement("dd");
-      description.textContent = value;
-      list.append(term, description);
-    }
-    disclosure.append(list);
-  } else {
-    const empty = document.createElement("p");
-    empty.className = "detail-attribution";
-    empty.textContent = "No additional listing details were captured for this record.";
-    disclosure.append(empty);
+  const list = document.createElement("dl");
+  list.className = "claim-details-list";
+  for (const [label, value] of visibleEntries) {
+    const term = document.createElement("dt");
+    term.textContent = label;
+    const description = document.createElement("dd");
+    description.textContent = value;
+    list.append(term, description);
   }
+  disclosure.append(list);
   const note = document.createElement("p");
   note.className = "detail-attribution";
   note.textContent = "Information displayed by the threat actor; not independently verified.";
-  if (visibleEntries.length) disclosure.append(note);
+  disclosure.append(note);
   cell.append(disclosure);
 }
 
@@ -261,11 +270,11 @@ function appendCountry(cell, item) {
 
 function makeRow(item) {
   const row = document.createElement("tr");
-  const organizationCell = addCell(row, "organization-cell", item.organization);
+  const organizationCell = addCell(row, "organization-cell", displayedOrganization(item));
   organizationCell.replaceChildren();
   const organizationName = document.createElement("div");
   organizationName.className = "organization-name";
-  organizationName.textContent = item.organization || "—";
+  organizationName.textContent = displayedOrganization(item) || "Unidentified listing";
   organizationCell.append(organizationName);
   appendClaimDetails(organizationCell, item);
 
@@ -287,19 +296,6 @@ function makeRow(item) {
   return row;
 }
 
-function makeReviewRow(item) {
-  const row = document.createElement("tr");
-  addCell(row, "organization-cell", item.post_title || item.organization || "Unlabeled listing");
-  addCell(row, "", item.organization || "—");
-  addCell(row, "group-cell", item.group_name);
-  addCell(row, "", postType(item));
-  addCell(row, "date-cell", displayDate(item.last_seen_at));
-  const detailsCell = document.createElement("td");
-  appendClaimDetails(detailsCell, item);
-  row.append(detailsCell);
-  return row;
-}
-
 function filteredSightings() {
   const query = elements.search.value.trim().toLocaleLowerCase();
   const group = elements.group.value;
@@ -318,26 +314,17 @@ function renderTable() {
   elements.rows.replaceChildren(...items.map(makeRow));
   elements.resultCount.textContent = items.length.toLocaleString() + " shown";
   const hasData = victimSightings().length > 0;
-  const hasReview = reviewSightings().length > 0;
   const hasFilters = Boolean(
     elements.search.value || elements.group.value || elements.country.value || elements.state.value,
   );
   elements.tableWrap.hidden = items.length === 0;
   elements.empty.hidden = items.length !== 0;
   if (!items.length) {
-    elements.emptyTitle.textContent = (hasData || hasReview) && hasFilters ? "No matching sightings" : "No victim claims yet";
-    elements.emptyCopy.textContent = (hasData || hasReview) && hasFilters
+    elements.emptyTitle.textContent = hasData && hasFilters ? "No matching sightings" : "No victim claims yet";
+    elements.emptyCopy.textContent = hasData && hasFilters
       ? "Change a filter or clear the search."
-      : hasReview
-        ? "Listings awaiting review appear in the inspection section below."
-        : "The dashboard will populate after a successful leak-site crawl.";
+      : "The dashboard will populate after a successful leak-site crawl.";
   }
-  const review = reviewSightings().sort((left, right) => sortTimestamp(right) - sortTimestamp(left));
-  elements.reviewSection.hidden = review.length === 0;
-  elements.reviewSummary.textContent = review.length.toLocaleString() + " headline or ambiguous listing(s) retained for inspection; excluded from victim totals.";
-  elements.reviewRows.replaceChildren(...review.map(makeReviewRow));
-  const reviewCount = elements.reviewSection.querySelector("#review-count");
-  if (reviewCount) reviewCount.textContent = review.length.toLocaleString();
 }
 
 async function loadData() {

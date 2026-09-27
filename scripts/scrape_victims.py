@@ -102,8 +102,12 @@ def clean_text(value: str) -> str:
 
 
 def normalize_name(value: str) -> str:
-    normalized = unicodedata.normalize("NFKD", value).encode("ascii", "ignore").decode("ascii")
-    return re.sub(r"[^a-z0-9]+", " ", normalized.casefold()).strip()
+    # Preserve non-Latin organization names (for example Chinese, Japanese,
+    # and Arabic text) so classification, deduplication, and history matching
+    # do not collapse distinct companies to an empty string.
+    normalized = unicodedata.normalize("NFKD", value).casefold()
+    normalized = "".join(character for character in normalized if not unicodedata.combining(character))
+    return re.sub(r"[\W_]+", " ", normalized, flags=re.UNICODE).strip()
 
 
 def country_from_flag(value: str) -> tuple[str | None, str]:

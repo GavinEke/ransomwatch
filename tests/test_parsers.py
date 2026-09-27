@@ -192,6 +192,36 @@ class VictimParserTests(unittest.TestCase):
         self.assertEqual(records["Leak: Northstar Health [LEAKED]"]["post_type"], "victim")
         self.assertFalse(any("href" in detail for detail in victim["claim_details"].values()))
 
+    def test_non_latin_company_names_remain_victims_and_dedupe_distinctly(self) -> None:
+        company = "🇹🇼 台灣東洋國際儀表股份有限公司"
+        normalized = scrape_victims.normalize_listing_record({
+            "post_title": company,
+            "organization": company,
+        })
+        self.assertEqual(normalized["post_type"], "victim")
+        self.assertEqual(normalized["organization"], "台灣東洋國際儀表股份有限公司")
+        self.assertEqual(normalized["country"], "Taiwan")
+
+        records = scrape_victims._dedupe_records([
+            {"organization": "台灣東洋國際儀表股份有限公司"},
+            {"organization": "台灣東洋電子股份有限公司"},
+        ])
+        self.assertEqual(len(records), 2)
+
+        migrated = scrape_victims.migrate_sightings([{
+            "id": "taiwan-company-id",
+            "group_id": "dire-wolf",
+            "source_id": "dire-wolf-source",
+            "organization": None,
+            "post_title": company,
+            "post_type": "review",
+            "first_seen_at": "2026-09-27T01:58:17Z",
+            "last_seen_at": "2026-09-27T01:58:17Z",
+        }])[0]
+        self.assertEqual(migrated["id"], "taiwan-company-id")
+        self.assertEqual(migrated["post_type"], "victim")
+        self.assertEqual(migrated["organization"], "台灣東洋國際儀表股份有限公司")
+
     def test_description_is_bounded_and_headline_records_are_retained(self) -> None:
         long_description = "x" * 620
         normalized = scrape_victims.normalize_listing_record({
@@ -555,15 +585,17 @@ class StaticSiteTests(unittest.TestCase):
         self.assertIn('src="./app.js"', html)
         self.assertIn('const DATA_URL = "./data/victims.json";', javascript)
         self.assertIn("function victimSightings()", javascript)
-        self.assertIn("function reviewSightings()", javascript)
+        self.assertNotIn("function reviewSightings()", javascript)
         self.assertIn("textContent = value", javascript)
         self.assertIn("View note and listing details", javascript)
         self.assertIn("./data/victims.json", javascript)
-        self.assertIn("directly below an organization’s name", html)
+        self.assertNotIn("directly below an organization’s name", html)
+        self.assertNotIn("RETAINED FOR INSPECTION", html)
+        self.assertNotIn("Headlines and ambiguous listings", html)
         self.assertNotIn("Listing information</th>", html)
         self.assertIn("Listings are claims published by threat actors", html)
         self.assertIn("does not confirm that a data breach occurred", html)
-        self.assertIn('id="review-section"', html)
+        self.assertNotIn('id="review-section"', html)
         self.assertIn('"skipped_budget"', javascript)
         self.assertIn('"skipped_inactive"', javascript)
         self.assertIn('"skipped_unscoped_catalog"', javascript)

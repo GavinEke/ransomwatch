@@ -8,7 +8,7 @@ Listings are claims published by threat actors. Seeing an organization here does
 
 - site/data/groups.json contains group names, status, upstream profile URLs, first/last-seen metadata, and direct website or Tor leak-site endpoints.
 - site/data/victims.json contains historical sightings with a normalized organization name, the original post title, a `victim`, `headline`, or `review` classification, group, source-reported date/country/sector when available, optional short listing details, first/last observation timestamps, listing state, and source host.
-- Clear headlines and ambiguous posts remain in the data for inspection but do not appear in victim totals or the default victim list. Country values inferred from a leading flag are labeled as inferred.
+- Headlines and ambiguous posts remain in the data but are not displayed in the dashboard or included in victim totals. Country values inferred from a leading flag are labeled as inferred.
 - Optional descriptions, claimed data size, file count, deadline, and organization website are collected only when explicitly shown on the listing. Those values are attributed to the threat actor and are not independently verified.
 
 The victim crawler checks groups marked `active`, and up to the first 25 listing pages at each direct extortion endpoint. It requires the catalog's `leak_sites_scope` marker, so older catalogs are skipped until the group catalog refresh runs. A visible organization is marked `listed`; a historical organization not found in the first 25 pages remains `unknown`. Offline, unsupported, inactive, unscoped, removed, and time-budget-skipped sources also leave sightings `unknown`. Historical sightings are retained.
@@ -23,6 +23,7 @@ The collectors use conservative HTML table and victim-card parsing. A site's lay
 4. Run Refresh group catalog from the Actions tab. When it completes, the victim crawl and Pages deployment run automatically.
 
 The group catalog also refreshes daily at 03:00 UTC. The second workflow can be dispatched manually to recrawl the current catalog. The Pages site URL appears in the deployment job summary.
+Dashboard code and data changes pushed to `main` are published by a separate Pages-only workflow without starting a victim crawl.
 
 ## Local use
 
@@ -47,6 +48,7 @@ python -m unittest discover -s tests -v
 
 - .github/workflows/refresh-groups.yml refreshes and commits the group catalog.
 - .github/workflows/scrape-victims.yml crawls the catalog, commits sightings, and deploys GitHub Pages.
+- .github/workflows/publish-pages.yml publishes dashboard changes without crawling leak sites.
 - scripts/ contains the collectors, bounded network/HTML helpers, and a Pages artifact builder that omits upstream profile links.
 - site/ contains the framework-free dashboard and generated JSON.
 - tests/fixtures/ contains small HTML examples used by parser tests.

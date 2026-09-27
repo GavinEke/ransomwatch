@@ -258,24 +258,6 @@ h1 span {
   margin-bottom: 4.5rem;
 }
 
-.review-section {
-  margin: -1.5rem 0 4.5rem;
-}
-
-.review-summary {
-  margin: -0.35rem 0 0.8rem;
-  color: var(--muted);
-  font-size: 0.76rem;
-  line-height: 1.6;
-}
-
-.review-count {
-  color: var(--muted);
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 0.8em;
-  font-weight: 400;
-}
-
 .section-heading {
   margin-bottom: 1rem;
 }
@@ -492,13 +474,6 @@ td details summary {
   margin: 0.8rem 0 0;
   color: var(--subtle);
   font-size: 0.68rem;
-  line-height: 1.55;
-}
-
-.listing-details-hint {
-  margin: 0.9rem 0 0;
-  color: #c3b2e4;
-  font-size: 0.74rem;
   line-height: 1.55;
 }
 
