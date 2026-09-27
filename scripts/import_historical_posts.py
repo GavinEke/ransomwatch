@@ -271,6 +271,7 @@ def build_import(
                 "archive_last_seen_at": discovered,
                 "listing_state": "unknown",
                 "source_id": None,
+                "source_ids": [],
                 "source_host": None,
                 "post_title": normalized.get("post_title"),
                 "post_type": "victim",
@@ -321,6 +322,17 @@ def build_import(
                 previous_metadata = sighting.get("historical_import")
                 merged_metadata = dict(previous_metadata) if isinstance(previous_metadata, dict) else {}
                 merged_metadata.update(metadata)
+                raw_source_ids = sighting.get("source_ids", [])
+                if isinstance(raw_source_ids, str):
+                    source_ids = {raw_source_ids} if raw_source_ids else set()
+                else:
+                    source_ids = set(str(value) for value in raw_source_ids if value)
+                if sighting.get("source_id"):
+                    source_ids.add(str(sighting["source_id"]))
+                source_ids.update(
+                    str(value) for value in merged_metadata.get("matched_source_ids", []) if value
+                )
+                sighting["source_ids"] = sorted(source_ids)
                 if not sighting.get("source_id"):
                     sighting["last_seen_at"] = max(
                         str(sighting.get("last_seen_at") or candidate["last_seen_at"]),

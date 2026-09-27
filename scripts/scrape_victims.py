@@ -4,7 +4,9 @@
 from __future__ import annotations
 
 import argparse
+from collections import defaultdict
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
+from datetime import datetime
 import hashlib
 import json
 import re
@@ -577,6 +579,15 @@ def source_id_for(url: str, group_id: str = "") -> str:
 def sighting_id_for(group_id: str, source_id: str, record: dict) -> str:
     record = normalize_listing_record(record)
     record_id = clean_text(str(record.get("record_id") or ""))
+    organization = normalize_name(str(record.get("organization") or ""))
+    if record.get("post_type") == "victim" and organization:
+        # Mirror URLs for one group often publish the same victim listing.
+        # Their URL-specific source IDs belong on the record as provenance,
+        # but must not create a second victim identity.
+        stable_identity = "victim:" + organization
+        material = f"{group_id.casefold()}\0{stable_identity}"
+        return hashlib.sha256(material.encode("utf-8")).hexdigest()[:24]
+
     fallback = record.get("organization") or record.get("post_title") or ""
     stable_identity = "record:" + record_id.casefold() if record_id else (
         record["post_type"] + ":" + normalize_name(str(fallback))
@@ -585,15 +596,165 @@ def sighting_id_for(group_id: str, source_id: str, record: dict) -> str:
     return hashlib.sha256(material.encode("utf-8")).hexdigest()[:24]
 
 
+def _sighting_source_ids(sighting: dict) -> list[str]:
+    """Return all known source IDs, including legacy and import provenance."""
+    source_ids: set[str] = set()
+    raw_source_ids = sighting.get("source_ids")
+    if isinstance(raw_source_ids, (list, tuple, set)):
+        source_ids.update(str(value) for value in raw_source_ids if value)
+    elif isinstance(raw_source_ids, str) and raw_source_ids:
+        source_ids.add(raw_source_ids)
+    if sighting.get("source_id"):
+        source_ids.add(str(sighting["source_id"]))
+    historical_import = sighting.get("historical_import")
+    if isinstance(historical_import, dict):
+        matched_source_ids = historical_import.get("matched_source_ids") or []
+        if isinstance(matched_source_ids, (list, tuple, set)):
+            source_ids.update(str(value) for value in matched_source_ids if value)
+        elif isinstance(matched_source_ids, str):
+            source_ids.add(matched_source_ids)
+    return sorted(source_ids)
+
+
+def _sighting_has_source_id(sighting: dict, source_id: str) -> bool:
+    return source_id in _sighting_source_ids(sighting)
+
+
+def _victim_identity(sighting: dict) -> tuple[str, str] | None:
+    if sighting.get("post_type") != "victim":
+        return None
+    group_id = str(sighting.get("group_id") or "").casefold()
+    organization = normalize_name(str(sighting.get("organization") or ""))
+    if not group_id or not organization:
+        return None
+    return group_id, organization
+
+
+def _merge_victim_sightings(sightings: list[dict]) -> dict:
+    """Combine same-group victim copies while preserving metadata and history."""
+    ordered = sorted(sightings, key=lambda item: str(item.get("id") or ""))
+    merged = dict(ordered[0])
+    for item in ordered[1:]:
+        for field in (
+            "organization", "post_title", "record_id", "reported_date", "country",
+            "country_basis", "sector", "source_host", "watchguard_profile_url",
+        ):
+            if not merged.get(field) and item.get(field):
+                merged[field] = item[field]
+
+    first_seen_values = [str(item["first_seen_at"]) for item in ordered if item.get("first_seen_at")]
+    last_seen_values = [str(item["last_seen_at"]) for item in ordered if item.get("last_seen_at")]
+    if first_seen_values:
+        merged["first_seen_at"] = min(first_seen_values, key=_timestamp_sort_key)
+    if last_seen_values:
+        merged["last_seen_at"] = max(last_seen_values, key=_timestamp_sort_key)
+
+    all_source_ids = sorted({source_id for item in ordered for source_id in _sighting_source_ids(item)})
+    merged["source_ids"] = all_source_ids
+    if not merged.get("source_id") and all_source_ids:
+        merged["source_id"] = all_source_ids[0]
+    primary_source_id = merged.get("source_id")
+    if not merged.get("source_host") and primary_source_id:
+        primary = next(
+            (item for item in ordered if item.get("source_id") == primary_source_id and item.get("source_host")),
+            None,
+        )
+        if primary:
+            merged["source_host"] = primary["source_host"]
+
+    details: dict = {}
+    for item in ordered:
+        for field, value in (item.get("claim_details") or {}).items():
+            if value and not details.get(field):
+                details[field] = value
+    if details:
+        merged["claim_details"] = details
+    else:
+        merged.pop("claim_details", None)
+
+    imports = [item.get("historical_import") for item in ordered if isinstance(item.get("historical_import"), dict)]
+    if imports:
+        provenance: dict = {}
+        matched_source_ids: set[str] = set()
+        for item in imports:
+            for field, value in item.items():
+                if field == "matched_source_ids":
+                    values = value if isinstance(value, (list, tuple, set)) else [value]
+                    matched_source_ids.update(str(source_id) for source_id in values if source_id)
+                elif value and not provenance.get(field):
+                    provenance[field] = value
+        if matched_source_ids:
+            provenance["matched_source_ids"] = sorted(matched_source_ids)
+        merged["historical_import"] = provenance
+
+    merged["listing_state"] = (
+        "listed" if any(item.get("listing_state") == "listed" for item in ordered) else "unknown"
+    )
+    return merged
+
+
+def _timestamp_sort_key(value: str) -> tuple[int, object]:
+    """Sort ISO timestamps chronologically, falling back to their text value."""
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        return 1, parsed.timestamp()
+    except (ValueError, OverflowError):
+        return 0, value
+
+
 def migrate_sightings(sightings: list[dict]) -> list[dict]:
-    """Add normalized classification/details while preserving existing IDs and history."""
+    """Add normalized fields and a multivalued source attribution compatibly."""
     migrated: list[dict] = []
     for item in sightings:
         if not isinstance(item, dict):
             continue
         normalized = normalize_listing_record(item)
-        migrated.append({**item, **normalized})
+        migrated_item = {**item, **normalized}
+        if migrated_item.get("post_type") == "victim":
+            migrated_item["source_ids"] = _sighting_source_ids(migrated_item)
+        migrated.append(migrated_item)
     return migrated
+
+
+def canonicalize_sightings(sightings: list[dict]) -> list[dict]:
+    """Keep one victim row per group/organization and preserve other records."""
+    victim_groups: dict[tuple[str, str], list[tuple[int, dict]]] = defaultdict(list)
+    ordered_sightings: list[tuple[int, dict]] = []
+    for index, original in enumerate(sightings):
+        if not isinstance(original, dict):
+            continue
+        # This migration changes victim identity only. Previously classified
+        # review and headline rows must keep their current fields and IDs.
+        if original.get("post_type") in {"headline", "review"}:
+            ordered_sightings.append((index, dict(original)))
+            continue
+        item = migrate_sightings([original])[0]
+        if original.get("post_type") == "victim":
+            item["post_type"] = "victim"
+            item["source_ids"] = _sighting_source_ids(item)
+        identity = _victim_identity(item)
+        if identity:
+            victim_groups[identity].append((index, item))
+        else:
+            ordered_sightings.append((index, item))
+
+    for _identity, indexed_items in sorted(victim_groups.items()):
+        merged = _merge_victim_sightings([item for _index, item in indexed_items])
+        ordered_sightings.append((min(index for index, _item in indexed_items), merged))
+
+    return [
+        item
+        for _index, item in sorted(
+            ordered_sightings,
+            key=lambda indexed: (
+                str(indexed[1].get("last_seen_at") or ""),
+                str(indexed[1].get("group_name") or "").casefold(),
+                str(indexed[1].get("organization") or "").casefold(),
+                -indexed[0],
+            ),
+            reverse=True,
+        )
+    ]
 
 
 def _matching_history(
@@ -602,16 +763,24 @@ def _matching_history(
     record_id = clean_text(str(record.get("record_id") or ""))
     normalized_org = normalize_name(str(record.get("organization") or ""))
     normalized_title = normalize_name(str(record.get("post_title") or ""))
+    if record.get("post_type") == "victim" and normalized_org:
+        identity = (group_id.casefold(), normalized_org)
+        matches = [
+            old for old in existing_by_id.values()
+            if _victim_identity(old) == identity
+        ]
+        return sorted(matches, key=lambda item: str(item.get("id") or ""))[0] if matches else None
+
     matches: list[dict] = []
     historical_matches: list[dict] = []
     for old in existing_by_id.values():
-        if old.get("group_id") != group_id:
+        if str(old.get("group_id") or "").casefold() != group_id.casefold():
             continue
-        same_source = old.get("source_id") == source_id
         old_record_id = clean_text(str(old.get("record_id") or ""))
+        same_source = _sighting_has_source_id(old, source_id)
+        old_org = normalize_name(str(old.get("organization") or ""))
         if same_source and record_id and old_record_id and record_id.casefold() == old_record_id.casefold():
             return old
-        old_org = normalize_name(str(old.get("organization") or ""))
         if same_source:
             if record_id and old_record_id:
                 continue
@@ -625,8 +794,11 @@ def _matching_history(
             # crawl sees the same group/organization, keep extending that
             # stable historical record even if the live source URL differs.
             historical_matches.append(old)
-    if len(matches) == 1:
-        return matches[0]
+    if matches:
+        # Normally there is one row after canonicalization. If old data still
+        # contains duplicates, select deterministically so a crawl never
+        # creates yet another copy.
+        return sorted(matches, key=lambda item: str(item.get("id") or ""))[0]
     if historical_matches:
         return sorted(
             historical_matches,
@@ -643,7 +815,12 @@ def _dedupe_records(records: list[dict]) -> list[dict]:
         name = normalize_name(str(record.get("organization") or ""))
         title = normalize_name(str(record.get("post_title") or ""))
         record_id = clean_text(str(record.get("record_id") or ""))
-        key = "record:" + record_id.casefold() if record_id else f"{record['post_type']}:{name or title}"
+        if record["post_type"] == "victim" and name:
+            key = "victim:" + name
+        elif record_id:
+            key = "record:" + record_id.casefold()
+        else:
+            key = f"{record['post_type']}:{name or title}"
         if not key:
             continue
         existing = result.get(key)
@@ -894,11 +1071,24 @@ def merge_source_result(
     """Merge a source crawl into append-only history and update listing state."""
     group_id = str(group.get("group_id") or "unknown")
     source_id = str(result["source_id"])
-    existing_by_id = {
-        item["id"]: dict(item)
-        for item in migrate_sightings(existing_sightings)
-        if isinstance(item, dict) and item.get("id")
-    }
+    existing_by_id: dict[str, dict] = {}
+    existing_victim_ids_by_identity: dict[tuple[str, str], str] = {}
+    for item in existing_sightings:
+        if not isinstance(item, dict) or not item.get("id"):
+            continue
+        if item.get("post_type") in {"headline", "review"}:
+            migrated = dict(item)
+        else:
+            migrated = {**item, **normalize_listing_record(item)}
+            if item.get("post_type") == "victim":
+                migrated["post_type"] = "victim"
+        if migrated.get("post_type") == "victim":
+            migrated["source_ids"] = _sighting_source_ids(migrated)
+        migrated_id = str(migrated["id"])
+        existing_by_id[migrated_id] = migrated
+        identity = _victim_identity(migrated)
+        if identity:
+            existing_victim_ids_by_identity.setdefault(identity, migrated_id)
     current_ids: set[str] = set()
     profile_url = str(group.get("profile_url") or "")
 
@@ -906,7 +1096,11 @@ def merge_source_result(
         record = normalize_listing_record(record)
         if not record.get("post_title"):
             continue
+        record_identity = _victim_identity({**record, "group_id": group_id})
         old = existing_by_id.get(sighting_id_for(group_id, source_id, record))
+        if old is None and record_identity:
+            old_id = existing_victim_ids_by_identity.get(record_identity)
+            old = existing_by_id.get(old_id) if old_id else None
         if old is None:
             old = _matching_history(existing_by_id, group_id, source_id, record)
         sighting_id = str(old.get("id")) if old else sighting_id_for(group_id, source_id, record)
@@ -916,29 +1110,46 @@ def merge_source_result(
         for field, value in record.get("claim_details", {}).items():
             if value:
                 details[field] = value
+        is_victim = record.get("post_type") == "victim"
+        primary_source_id = str(old.get("source_id") or source_id)
+        all_source_ids = sorted(set(_sighting_source_ids(old) + [source_id])) if is_victim else []
+        first_seen_at = old.get("first_seen_at") or observed_at
+        if old.get("first_seen_at") and _timestamp_sort_key(str(old["first_seen_at"])) > _timestamp_sort_key(observed_at):
+            first_seen_at = observed_at
+        last_seen_at = observed_at
+        if old.get("last_seen_at") and _timestamp_sort_key(str(old["last_seen_at"])) > _timestamp_sort_key(observed_at):
+            last_seen_at = old["last_seen_at"]
+        source_host = old.get("source_host")
+        if not source_host and primary_source_id == source_id:
+            source_host = result.get("source_host") or ""
         sighting = {
             **old,
             "id": sighting_id,
             "group_id": group_id,
             "group_name": str(group.get("name") or group_id),
-            "organization": record.get("organization"),
-            "post_title": record.get("post_title"),
+            "organization": old.get("organization") or record.get("organization"),
+            "post_title": old.get("post_title") or record.get("post_title"),
             "post_type": record.get("post_type", "review"),
-            "record_id": record.get("record_id") or old.get("record_id"),
+            "record_id": old.get("record_id") or record.get("record_id"),
             "reported_date": record.get("reported_date") or old.get("reported_date"),
             "country": record.get("country") or old.get("country"),
             "country_basis": record.get("country_basis") or old.get("country_basis"),
             "sector": record.get("sector") or old.get("sector"),
-            "first_seen_at": old.get("first_seen_at") or observed_at,
-            "last_seen_at": observed_at,
+            "first_seen_at": first_seen_at,
+            "last_seen_at": last_seen_at,
             "listing_state": "listed",
-            "source_id": source_id,
-            "source_host": result.get("source_host") or "",
+            "source_id": primary_source_id if is_victim else source_id,
+            "source_host": source_host,
             "watchguard_profile_url": profile_url,
         }
+        if is_victim:
+            sighting["source_ids"] = all_source_ids
+        else:
+            sighting.pop("source_ids", None)
         historical_import = old.get("historical_import")
         if isinstance(historical_import, dict):
-            matched_source_ids = list(historical_import.get("matched_source_ids") or [])
+            raw_matched_ids = historical_import.get("matched_source_ids") or []
+            matched_source_ids = list(raw_matched_ids) if isinstance(raw_matched_ids, (list, tuple, set)) else []
             if source_id not in matched_source_ids:
                 matched_source_ids.append(source_id)
             sighting["historical_import"] = {
@@ -948,9 +1159,11 @@ def merge_source_result(
         if details:
             sighting["claim_details"] = details
         existing_by_id[sighting_id] = sighting
+        if is_victim and record_identity:
+            existing_victim_ids_by_identity[record_identity] = sighting_id
 
     for sighting_id, sighting in existing_by_id.items():
-        if sighting.get("group_id") != group_id or sighting.get("source_id") != source_id:
+        if str(sighting.get("group_id") or "").casefold() != group_id.casefold() or not _sighting_has_source_id(sighting, source_id):
             continue
         if sighting_id in current_ids:
             continue
@@ -967,6 +1180,25 @@ def merge_source_result(
         ),
         reverse=True,
     )
+
+
+def aggregate_listing_states(
+    sightings: list[dict], active_group_ids: set[str], listed_victims: set[tuple[str, str]]
+) -> list[dict]:
+    """Set merged victim state from all source results in this crawl."""
+    aggregated: list[dict] = []
+    active_ids = {group_id.casefold() for group_id in active_group_ids}
+    for sighting in sightings:
+        identity = _victim_identity(sighting)
+        if identity is None:
+            aggregated.append(sighting)
+            continue
+        updated = dict(sighting)
+        updated["listing_state"] = (
+            "listed" if identity[0] in active_ids and identity in listed_victims else "unknown"
+        )
+        aggregated.append(updated)
+    return aggregated
 
 
 def _group_status(source_results: list[dict], group_status: str = "active") -> str:
@@ -1023,7 +1255,7 @@ def crawl_catalog(
     run_at = utc_now()
     crawl_started = time.monotonic()
     deadline = crawl_started + max(0.0, float(budget_seconds))
-    sightings = migrate_sightings(previous.get("sightings", []))
+    sightings = canonicalize_sightings(previous.get("sightings", []))
     source_records: dict[str, dict] = {
         str(item["source_id"]): dict(item)
         for item in previous.get("sources", [])
@@ -1035,6 +1267,7 @@ def crawl_catalog(
     group_source_ids: dict[str, list[str]] = {}
     active_group_ids: set[str] = set()
     inactive_group_ids: set[str] = set()
+    listed_victims: set[tuple[str, str]] = set()
     active_assignment_count = 0
 
     for group in groups:
@@ -1088,7 +1321,7 @@ def crawl_catalog(
                 }
                 source_records[source_id] = record
                 for sighting in sightings:
-                    if sighting.get("source_id") == source_id:
+                    if _sighting_has_source_id(sighting, source_id):
                         sighting["listing_state"] = "unknown"
                 continue
 
@@ -1111,7 +1344,7 @@ def crawl_catalog(
                     "watchguard_profile_url": str(group.get("profile_url") or ""),
                 }
                 for sighting in sightings:
-                    if sighting.get("source_id") == source_id:
+                    if _sighting_has_source_id(sighting, source_id):
                         sighting["listing_state"] = "unknown"
                 _emit(
                     f"source_skipped group_id={group_id} source_id={source_id} host={host or 'unknown'} "
@@ -1211,6 +1444,14 @@ def crawl_catalog(
             group = association["group"]
             source = association["source"]
             source_id = association["source_id"]
+            group_id = str(group["group_id"])
+            for record in result.get("records", []):
+                normalized = normalize_listing_record(record)
+                if normalized.get("post_type") != "victim":
+                    continue
+                identity = _victim_identity({**normalized, "group_id": group_id})
+                if identity:
+                    listed_victims.add(identity)
             attributed_result = {**result, "source_id": source_id}
             sightings = merge_source_result(sightings, group, source, attributed_result, completed_at)
             source_records[source_id] = {
@@ -1356,7 +1597,7 @@ def crawl_catalog(
                 "watchguard_profile_url": str(group.get("profile_url") or ""),
             }
             for sighting in sightings:
-                if sighting.get("source_id") == source_id:
+                if _sighting_has_source_id(sighting, source_id):
                     sighting["listing_state"] = "unknown"
     if budget_exhausted:
         interrupted_sources = sum(
@@ -1382,8 +1623,11 @@ def crawl_catalog(
         source_record["page_limit_reached"] = False
         source_records[source_id] = source_record
         for sighting in sightings:
-            if sighting.get("source_id") == source_id:
+            if _sighting_has_source_id(sighting, source_id):
                 sighting["listing_state"] = "unknown"
+
+    sightings = canonicalize_sightings(sightings)
+    sightings = aggregate_listing_states(sightings, active_group_ids, listed_victims)
 
     group_summaries: list[dict] = []
     for group_id, group in group_by_id.items():

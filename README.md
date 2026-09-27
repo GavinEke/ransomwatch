@@ -7,7 +7,7 @@ Listings are claims published by threat actors. Seeing an organization here does
 ## Data collected
 
 - site/data/groups.json contains group names, status, upstream profile URLs, first/last-seen metadata, and direct website or Tor leak-site endpoints.
-- site/data/victims.json contains historical sightings with a normalized organization name, the original post title, a `victim`, `headline`, or `review` classification, group, source-reported date/country/sector when available, optional short listing details, first/last observation timestamps, listing state, and source host.
+- site/data/victims.json contains one victim row per group and normalized organization, with the original post title, source-reported date/country/sector when available, optional short listing details, first/last observation timestamps, and listing state. Victim rows retain the legacy primary `source_id` plus a `source_ids` array for every leak-site URL that has reported the organization; per-URL crawl status remains in `sources[]`.
 - Headlines and ambiguous posts remain in the data but are not displayed in the dashboard or included in victim totals. Country values inferred from a leading flag are labeled as inferred.
 - Optional descriptions, claimed data size, file count, deadline, and organization website are collected only when explicitly shown on the listing. Those values are attributed to the threat actor and are not independently verified.
 

@@ -130,6 +130,7 @@ class HistoricalImportTests(unittest.TestCase):
         merged = imported["sightings"][0]
         self.assertEqual(merged["id"], "existing-live-id")
         self.assertEqual(merged["source_id"], "live-source-id")
+        self.assertEqual(merged["source_ids"], ["live-source-id"])
         self.assertEqual(merged["source_host"], "live.example")
         self.assertEqual(merged["listing_state"], "listed")
         self.assertEqual(merged["first_seen_at"], "2022-04-03T00:00:00Z")
