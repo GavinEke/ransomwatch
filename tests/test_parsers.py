@@ -160,9 +160,16 @@ class VictimParserTests(unittest.TestCase):
             "https://leak.example.invalid/",
         )
         records = {item["post_title"]: item for item in parsed["records"]}
-        for title in ("Welcome", "Important Announcement", "What time does the clock show?", "Passwordstate weak encryption article", "View All →"):
+        for title in (
+            "Welcome", "Important Announcement", "What time does the clock show?",
+            "Passwordstate weak encryption article", "View All →", "Why it matters",
+            "What is stored", "Warning", "Press", "Notice", "Jurisdiction",
+            "**[ COOPERATION REACHED ]",
+        ):
             self.assertEqual(records[title]["post_type"], "headline")
             self.assertIsNone(records[title]["organization"])
+        self.assertEqual(records["**—"]["post_type"], "review")
+        self.assertIsNone(records["**—"]["organization"])
         victim = records["🇺🇸 Acme Holdings [ALL STOLEN DATA]"]
         self.assertEqual(victim["post_type"], "victim")
         self.assertEqual(victim["organization"], "Acme Holdings")
@@ -258,7 +265,7 @@ class VictimParserTests(unittest.TestCase):
         self.assertEqual(updated[0]["listing_state"], "listed")
         self.assertEqual(updated[0]["claim_details"]["file_count"], "40 files")
 
-    def test_crawl_reads_one_page_only(self) -> None:
+    def test_crawl_follows_pagination_from_the_first_page(self) -> None:
         page_1 = fixture("leak-table-page-1.html")
         calls: list[str] = []
 
@@ -271,9 +278,32 @@ class VictimParserTests(unittest.TestCase):
             fetcher=fake_fetch,
         )
         self.assertEqual(result["status"], "ok")
-        self.assertEqual(result["pages_scanned"], 1)
-        self.assertEqual(len(calls), 1)
+        self.assertEqual(result["pages_scanned"], 2)
+        self.assertEqual(len(calls), 2)
         self.assertEqual({row["organization"] for row in result["records"]}, {"Alpha Research"})
+
+    def test_crawl_stops_after_25_pages_and_reports_the_cap(self) -> None:
+        calls: list[str] = []
+
+        def fake_fetch(url: str, **_kwargs) -> SimpleNamespace:
+            calls.append(url)
+            page_number = int(url.rsplit("=", 1)[1]) if "?page=" in url else 1
+            next_page = page_number + 1
+            markup = (
+                f'<article class="post-card" data-id="page-{page_number}"><h2>Company {page_number}</h2></article>'
+                f'<nav class="pagination"><a rel="next" href="?page={next_page}">Next</a></nav>'
+            )
+            return SimpleNamespace(url=url, body=markup, status_code=200)
+
+        result = scrape_victims.crawl_site(
+            "https://leak.example.invalid/",
+            fetcher=fake_fetch,
+            max_pages=25,
+        )
+        self.assertEqual(result["pages_scanned"], 25)
+        self.assertEqual(len(calls), 25)
+        self.assertTrue(result["page_limit_reached"])
+        self.assertEqual(len(result["records"]), 25)
 
     def test_fetch_deadline_is_passed_to_fetcher_and_reported(self) -> None:
         observed: dict[str, float] = {}
@@ -378,7 +408,8 @@ class VictimParserTests(unittest.TestCase):
             request_delay_seconds=0,
         )
 
-        self.assertEqual(calls, ["https://leak.example.invalid/"])
+        self.assertEqual(calls, ["https://leak.example.invalid/", "https://leak.example.invalid/?page=2"])
+        self.assertEqual(result["crawl_pages_scanned"], 2)
         self.assertEqual(len(result["sightings"]), 2)
         self.assertEqual({item["group_id"] for item in result["sightings"]}, {"active-one", "active-two"})
         source_states = {item["group_id"]: item["status"] for item in result["sources"]}
@@ -432,7 +463,7 @@ class VictimParserTests(unittest.TestCase):
             budget_seconds=10,
             request_delay_seconds=0,
         )
-        self.assertEqual(len(calls), 2)
+        self.assertEqual(len(calls), 3)
         self.assertEqual({item["status"] for item in result["sources"]}, {"offline", "ok"})
         old = next(item for item in result["sightings"] if item["id"] == "historical")
         self.assertEqual(old["listing_state"], "unknown")
@@ -484,7 +515,7 @@ class VictimParserTests(unittest.TestCase):
             max_concurrency=1,
         )
         self.assertTrue(result["crawl_partial"])
-        self.assertEqual({item["status"] for item in result["sources"]}, {"ok", "skipped_budget"})
+        self.assertEqual({item["status"] for item in result["sources"]}, {"partial", "skipped_budget"})
         self.assertTrue(any(item["listing_state"] == "listed" for item in result["sightings"]))
 
     def test_concurrency_is_capped_at_three(self) -> None:
@@ -526,8 +557,10 @@ class StaticSiteTests(unittest.TestCase):
         self.assertIn("function victimSightings()", javascript)
         self.assertIn("function reviewSightings()", javascript)
         self.assertIn("textContent = value", javascript)
-        self.assertIn("Actor-reported details", javascript)
+        self.assertIn("View note and listing details", javascript)
         self.assertIn("./data/victims.json", javascript)
+        self.assertIn("directly below an organization’s name", html)
+        self.assertNotIn("Listing information</th>", html)
         self.assertIn("Listings are claims published by threat actors", html)
         self.assertIn("does not confirm that a data breach occurred", html)
         self.assertIn('id="review-section"', html)
@@ -535,6 +568,9 @@ class StaticSiteTests(unittest.TestCase):
         self.assertIn('"skipped_inactive"', javascript)
         self.assertIn('"skipped_unscoped_catalog"', javascript)
         self.assertIn("dataset.crawl_partial", javascript)
+        self.assertIn("up to the first 25 listing pages", html)
+        self.assertNotIn("WatchGuard", html)
+        self.assertNotIn("WatchGuard", javascript)
 
 
 if __name__ == "__main__":

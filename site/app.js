@@ -35,19 +35,6 @@ function setText(element, value) {
   element.textContent = value == null || value === "" ? "—" : String(value);
 }
 
-function safeProfileUrl(value) {
-  if (!value) return null;
-  try {
-    const url = new URL(value, window.location.href);
-    if (url.protocol === "https:" && ["watchguard.com", "www.watchguard.com"].includes(url.hostname)) {
-      return url.href;
-    }
-  } catch (_error) {
-    return null;
-  }
-  return null;
-}
-
 function displayDate(value, includeTime = false) {
   if (!value) return "—";
   const date = new Date(value);
@@ -79,10 +66,12 @@ function postType(item) {
   // Older schema files have no post_type. Keep them readable and apply the
   // same obvious headline exclusions until the next collector migration.
   const title = String(item.post_title || item.organization || "").trim().toLocaleLowerCase();
-  if (["welcome", "important announcement", "home", "about", "contact", "news", "blog", "victims", "victim list", "recent victims", "all victims", "load more", "read more"].includes(title)) return "headline";
-  if (/^announcement\s+(for|about)\b/.test(title)) return "review";
-  if (/^(view all|load more|read more|what time does|what time is|response to |publication hold|press release|statement:|article:)/.test(title)) return "headline";
-  if (/\b(article|interview|press release|announcement)\b/.test(title)) return "headline";
+  const normalizedTitle = title.replace(/[\[\]*_`~]/g, "").replace(/\s+/g, " ").trim();
+  if (!/[\p{L}\p{N}]/u.test(normalizedTitle)) return "headline";
+  if (["welcome", "important announcement", "home", "about", "contact", "news", "blog", "victims", "victim list", "recent victims", "all victims", "load more", "read more", "why it matters", "what is stored", "warning", "press", "notice", "jurisdiction", "cooperation reached"].includes(normalizedTitle)) return "headline";
+  if (/^announcement\s+(for|about)\b/.test(normalizedTitle)) return "review";
+  if (/^(view all|load more|read more|what time does|what time is|response to |publication hold|press release|statement:|article:|why it matters|what is stored|warning:|notice:|jurisdiction:|cooperation reached)/.test(normalizedTitle)) return "headline";
+  if (/\b(article|interview|press release|announcement)\b/.test(normalizedTitle)) return "headline";
   return "victim";
 }
 
@@ -106,14 +95,21 @@ function renderMetrics() {
   const listedCount = sightings.filter((item) => normalizedState(item.listing_state) === "listed").length;
   const sourceTotal = (dataset.sources || []).length;
   const sourceOk = sourceCount("ok");
+  const pagesScanned = Number.isFinite(Number(dataset.crawl_pages_scanned))
+    ? Number(dataset.crawl_pages_scanned)
+    : (dataset.sources || []).reduce((count, source) => count + (Number(source.pages_scanned) || 0), 0);
+  const pageLimitReached = (dataset.sources || []).filter((source) => source.page_limit_reached).length;
   const skippedInactive = sourceCount("skipped_inactive");
   const skippedRemoved = sourceCount("not_in_catalog");
   const skippedUnscoped = sourceCount("skipped_unscoped_catalog");
   const skippedBudget = sourceCount("skipped_budget");
+  const partialBudgetSources = (dataset.sources || []).filter(
+    (source) => source.status === "partial" && source.error === "crawl_budget_reached",
+  ).length;
   const skippedTotal = skippedInactive + skippedRemoved + skippedUnscoped + skippedBudget;
   const checkedTotal = Math.max(0, sourceTotal - skippedTotal);
   const failedTotal = Math.max(0, checkedTotal - sourceOk);
-  const profileIssues = (dataset.groups || []).filter((group) => group.source_issue && group.source_issue !== "ok").length;
+  const catalogIssues = (dataset.groups || []).filter((group) => group.source_issue && group.source_issue !== "ok").length;
   const groupCount = (dataset.groups || []).length;
   setText(elements.total, sightings.length.toLocaleString());
   setText(elements.listed, listedCount.toLocaleString());
@@ -130,11 +126,14 @@ function renderMetrics() {
     statusCounts.set(status, (statusCounts.get(status) || 0) + 1);
   }
   elements.coverageSummary.textContent = sourceTotal
-    ? sourceOk + " of " + checkedTotal + " checked sources returned a complete first-page listing; " +
+    ? sourceOk + " of " + checkedTotal + " checked sources completed the scan (up to 25 pages); " +
       failedTotal + " need attention; " + skippedBudget + " skipped by the time budget; " +
+      partialBudgetSources + " source(s) had their page scan stopped by the time budget; " +
       skippedInactive + " skipped because the group is not active; " + skippedUnscoped +
       " skipped until the catalog is refreshed; " + skippedRemoved + " no longer in the catalog." +
-      (profileIssues ? " " + profileIssues + " group profile issue(s) were reported." : "") +
+      " " + pagesScanned.toLocaleString() + " unique listing pages scanned; " +
+      pageLimitReached.toLocaleString() + " source(s) reached the 25-page cap." +
+      (catalogIssues ? " " + catalogIssues + " group catalog issue(s) were reported." : "") +
       (dataset.crawl_partial ? " This crawl is partial; skipped sightings remain unknown." : "")
     : "No direct leak-site sources are present in the latest group catalog.";
   elements.coverageDetails.replaceChildren();
@@ -151,6 +150,14 @@ function renderMetrics() {
     const number = document.createElement("strong");
     number.textContent = String(count);
     chip.append(number, document.createTextNode(" " + status.replaceAll("_", " ")));
+    elements.coverageDetails.append(chip);
+  }
+  if (pagesScanned) {
+    const chip = document.createElement("span");
+    chip.className = "coverage-chip";
+    const number = document.createElement("strong");
+    number.textContent = pagesScanned.toLocaleString();
+    chip.append(number, document.createTextNode(" unique listing pages scanned"));
     elements.coverageDetails.append(chip);
   }
 }
@@ -180,7 +187,6 @@ function searchText(item) {
     item.country,
     item.sector,
     item.reported_date,
-    item.source_host,
   ].filter(Boolean).join(" ").toLocaleLowerCase();
 }
 
@@ -189,18 +195,6 @@ function sortTimestamp(item) {
   if (Number.isFinite(reported)) return reported;
   const observed = Date.parse(item.last_seen_at || "");
   return Number.isFinite(observed) ? observed : 0;
-}
-
-function makeProfileLink(value) {
-  const href = safeProfileUrl(value);
-  if (!href) return null;
-  const link = document.createElement("a");
-  link.className = "profile-link";
-  link.href = href;
-  link.target = "_blank";
-  link.rel = "noopener noreferrer";
-  link.textContent = "WatchGuard profile ↗";
-  return link;
 }
 
 function addCell(row, className, text) {
@@ -213,34 +207,45 @@ function addCell(row, className, text) {
 
 function appendClaimDetails(cell, item) {
   const details = item.claim_details && typeof item.claim_details === "object" ? item.claim_details : {};
-  const entries = [
+  const entries = [];
+  const title = typeof item.post_title === "string" ? item.post_title.trim() : "";
+  const organization = typeof item.organization === "string" ? item.organization.trim() : "";
+  if (title && title.toLocaleLowerCase() !== organization.toLocaleLowerCase()) {
+    entries.push(["Original listing title", title]);
+  }
+  entries.push(
     ["Listing description", details.description],
     ["Claimed data size", details.claimed_data_size],
     ["Claimed file count", details.file_count],
     ["Claimed deadline", details.deadline],
     ["Organization website shown", details.organization_website],
-  ].filter((entry) => typeof entry[1] === "string" && entry[1].trim());
-  if (!entries.length) {
-    cell.textContent = "—";
-    return;
-  }
+  );
+  const visibleEntries = entries.filter((entry) => typeof entry[1] === "string" && entry[1].trim());
   const disclosure = document.createElement("details");
   const summary = document.createElement("summary");
-  summary.textContent = "Actor-reported details";
+  summary.textContent = "View note and listing details";
   disclosure.append(summary);
-  const list = document.createElement("dl");
-  list.className = "claim-details-list";
-  for (const [label, value] of entries) {
-    const term = document.createElement("dt");
-    term.textContent = label;
-    const description = document.createElement("dd");
-    description.textContent = value;
-    list.append(term, description);
+  if (visibleEntries.length) {
+    const list = document.createElement("dl");
+    list.className = "claim-details-list";
+    for (const [label, value] of visibleEntries) {
+      const term = document.createElement("dt");
+      term.textContent = label;
+      const description = document.createElement("dd");
+      description.textContent = value;
+      list.append(term, description);
+    }
+    disclosure.append(list);
+  } else {
+    const empty = document.createElement("p");
+    empty.className = "detail-attribution";
+    empty.textContent = "No additional listing details were captured for this record.";
+    disclosure.append(empty);
   }
   const note = document.createElement("p");
   note.className = "detail-attribution";
   note.textContent = "Information displayed by the threat actor; not independently verified.";
-  disclosure.append(list, note);
+  if (visibleEntries.length) disclosure.append(note);
   cell.append(disclosure);
 }
 
@@ -257,8 +262,12 @@ function appendCountry(cell, item) {
 function makeRow(item) {
   const row = document.createElement("tr");
   const organizationCell = addCell(row, "organization-cell", item.organization);
-  const profile = makeProfileLink(item.watchguard_profile_url);
-  if (profile) organizationCell.append(document.createElement("br"), profile);
+  organizationCell.replaceChildren();
+  const organizationName = document.createElement("div");
+  organizationName.className = "organization-name";
+  organizationName.textContent = item.organization || "—";
+  organizationCell.append(organizationName);
+  appendClaimDetails(organizationCell, item);
 
   addCell(row, "group-cell", item.group_name);
   addCell(row, "date-cell", item.reported_date || "—");
@@ -275,9 +284,6 @@ function makeRow(item) {
   pill.textContent = stateLabel(state);
   stateCell.append(pill);
   row.append(stateCell);
-  const detailsCell = document.createElement("td");
-  appendClaimDetails(detailsCell, item);
-  row.append(detailsCell);
   return row;
 }
 
@@ -288,11 +294,6 @@ function makeReviewRow(item) {
   addCell(row, "group-cell", item.group_name);
   addCell(row, "", postType(item));
   addCell(row, "date-cell", displayDate(item.last_seen_at));
-  const profileCell = document.createElement("td");
-  const profile = makeProfileLink(item.watchguard_profile_url);
-  if (profile) profileCell.append(profile);
-  else profileCell.textContent = "—";
-  row.append(profileCell);
   const detailsCell = document.createElement("td");
   appendClaimDetails(detailsCell, item);
   row.append(detailsCell);

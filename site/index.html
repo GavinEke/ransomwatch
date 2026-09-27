@@ -15,17 +15,13 @@
         <span class="brand-mark" aria-hidden="true">R</span>
         <span>Ransomwatch</span>
       </a>
-      <a class="source-link" href="https://www.watchguard.com/wgrd-security-hub/ransomware-tracker" target="_blank" rel="noopener noreferrer">
-        WatchGuard source
-        <span aria-hidden="true">↗</span>
-      </a>
     </header>
 
     <main class="page-shell">
       <section class="intro">
         <div class="eyebrow"><span class="live-dot"></span> PUBLIC THREAT INTELLIGENCE</div>
         <h1>Victim claims,<br><span>tracked over time.</span></h1>
-        <p class="intro-copy">A record of organizations named on ransomware group leak sites, gathered from the public WatchGuard group catalog.</p>
+        <p class="intro-copy">A record of organizations named on ransomware group leak sites, gathered from publicly available group and listing information.</p>
         <p class="claim-note"><strong>Threat actor claims, not confirmation.</strong> Listings are claims published by threat actors. Seeing an organization here does not confirm that a data breach occurred or that data was stolen.</p>
       </section>
 
@@ -43,7 +39,7 @@
         <article class="metric-card">
           <span class="metric-label">Groups tracked</span>
           <strong id="metric-groups">—</strong>
-          <span class="metric-foot">From the WatchGuard catalog</span>
+          <span class="metric-foot">Across tracked groups</span>
         </article>
         <article class="metric-card">
           <span class="metric-label">Sources tracked</span>
@@ -123,13 +119,13 @@
                 <th scope="col">Sector</th>
                 <th scope="col">Last observed</th>
                 <th scope="col">Listing state</th>
-                <th scope="col">Claim details</th>
               </tr>
             </thead>
             <tbody id="victim-rows"></tbody>
           </table>
         </div>
-        <p class="data-footnote">Reported dates, countries, and sectors are shown as they appear on the listing when provided. “Last observed” is when this project last saw the entry. The crawler checks only the first listing page for active groups; an entry missing from that page remains unknown. Historical sightings are retained. Optional details are claims shown by the threat actor, not independently verified.</p>
+        <p class="listing-details-hint">Open “View note and listing details” directly below an organization’s name to see its original post title and any extra information captured from the listing.</p>
+        <p class="data-footnote">Reported dates, countries, and sectors are shown as they appear on the listing when provided. “Last observed” is when this project last saw the entry. The crawler checks up to the first 25 listing pages for active groups; entries not found in those pages remain unknown. Historical sightings are retained. Optional details are claims shown by the threat actor, not independently verified.</p>
       </section>
 
       <section id="review-section" class="review-section" aria-labelledby="review-title" hidden>
@@ -149,7 +145,6 @@
                 <th scope="col">Group</th>
                 <th scope="col">Classification</th>
                 <th scope="col">Last observed</th>
-                <th scope="col">Attribution</th>
                 <th scope="col">Claim details</th>
               </tr>
             </thead>

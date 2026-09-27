@@ -11,6 +11,7 @@ import re
 import sys
 import time
 import unicodedata
+from threading import Lock
 from pathlib import Path
 from typing import Callable
 from urllib.parse import parse_qs, unquote, urljoin, urlparse, urlunsplit
@@ -26,6 +27,7 @@ OUTPUT_PATH = ROOT / "site" / "data" / "victims.json"
 MAX_CONCURRENCY = 3
 FETCH_DEADLINE_SECONDS = 25.0
 CRAWL_BUDGET_SECONDS = 90 * 60
+MAX_PAGES_PER_SOURCE = 25
 REQUEST_DELAY_SECONDS = 0.8
 VICTIM_HEADERS = ("victim", "company", "organization", "organisation", "target", "entity")
 NAME_HEADERS = {"name", "company name", "victim name", "organization name", "organisation name"}
@@ -36,7 +38,8 @@ CARD_CLASS_MARKERS = {"victim", "victim-card", "victim-item", "post", "post-card
 GENERIC_TITLES = {
     "home", "about", "contact", "news", "blog", "victims", "victim list",
     "recent victims", "all victims", "load more", "read more", "welcome",
-    "important announcement",
+    "important announcement", "why it matters", "what is stored", "warning",
+    "press", "notice", "jurisdiction", "cooperation reached",
 }
 STATUS_TAGS = {
     "announcement", "all data published", "all stolen data", "data leak", "data leaked",
@@ -46,6 +49,8 @@ TITLE_PREFIXES = ("leak:", "victim:", "new victim:", "company:", "organization:"
 HEADLINE_PREFIXES = (
     "view all", "load more", "read more", "what time does", "what time is",
     "response to ", "publication hold", "press release", "statement:", "article:",
+    "why it matters", "what is stored", "warning:", "notice:", "jurisdiction:",
+    "cooperation reached",
 )
 DETAIL_LABELS = {
     "description": {"description", "summary", "excerpt", "post description"},
@@ -136,7 +141,7 @@ def _classify_listing_title(title: str, organization: str | None = None) -> tupl
     candidate = clean_text(organization or cleaned) or None
     normalized = normalize_name(cleaned)
     lowered = cleaned.casefold()
-    if not cleaned:
+    if not cleaned or not normalized:
         return "review", None
     if normalized in GENERIC_TITLES or any(lowered.startswith(prefix) for prefix in HEADLINE_PREFIXES):
         return "headline", None
@@ -641,14 +646,23 @@ def crawl_site(
     source_url: str,
     *,
     group_id: str = "",
+    group_ids: list[str] | None = None,
+    source_ids: list[str] | None = None,
     fetcher=fetch_html,
     deadline_seconds: float = FETCH_DEADLINE_SECONDS,
+    crawl_deadline: float | None = None,
+    max_pages: int = MAX_PAGES_PER_SOURCE,
+    request_pacer: Callable[[str], None] | None = None,
 ) -> dict:
-    """Fetch and parse exactly the initial listing page for a source."""
+    """Fetch and parse up to the first 25 listing pages for one source."""
+    context = (
+        f"group_ids={','.join(group_ids or ([group_id] if group_id else [])) or 'unknown'} "
+        f"source_ids={','.join(source_ids or []) or 'unknown'}"
+    )
     try:
         normalized_source = normalize_url(source_url)
         source_id = source_id_for(normalized_source, group_id)
-        source_host = (urlparse(normalized_source).hostname or "").lower()
+        source_host = (urlparse(normalized_source).hostname or "").casefold()
     except FetchError as exc:
         return {
             "source_id": hashlib.sha256(
@@ -662,79 +676,192 @@ def crawl_site(
             "records": [],
             "parser": None,
             "http_status": getattr(exc, "http_status", None),
+            "page_errors": [],
+            "page_limit_reached": False,
         }
 
-    try:
-        response = fetcher(normalized_source, total_timeout=deadline_seconds)
-    except FetchError as exc:
-        unsupported = exc.code in {
-            "invalid_url", "unsupported_scheme", "unsupported_content_type",
-            "blocked_private_target", "unsupported_layout",
-        }
-        return {
-            "source_id": source_id,
-            "source_host": source_host,
-            "status": "unsupported" if unsupported else "offline",
-            "error": exc.code,
-            "error_type": getattr(exc, "cause_type", None),
-            "pages_scanned": 0,
-            "records": [],
-            "parser": None,
-            "http_status": getattr(exc, "http_status", None),
-        }
-    except Exception as exc:
-        return {
-            "source_id": source_id,
-            "source_host": source_host,
-            "status": "offline",
-            "error": "fetch_error",
-            "error_type": type(exc).__name__,
-            "pages_scanned": 0,
-            "records": [],
-            "parser": None,
-            "http_status": None,
-        }
+    page_limit = max(1, int(max_pages))
+    pending_pages = [normalized_source]
+    queued_keys = {_canonical_source_url(normalized_source)}
+    scanned_pages = 0
+    page_errors: list[dict] = []
+    records: list[dict] = []
+    parsers: list[str] = []
+    last_http_status: int | None = None
+    budget_hit = False
 
-    response_host = (urlparse(response.url).hostname or "").casefold()
-    error: str | None = None
-    error_type: str | None = None
-    parsed_result: dict | None = None
-    if not response_host:
-        error = "invalid_response_url"
-    elif response_host != source_host:
-        error = "redirect_host_changed"
-    else:
+    pages_attempted = 0
+    while pending_pages and pages_attempted < page_limit:
+        page_number = pages_attempted + 1
+        page_url = pending_pages.pop(0)
+        if request_pacer:
+            request_pacer(source_host)
+
+        remaining = deadline_seconds
+        if crawl_deadline is not None:
+            remaining = min(remaining, crawl_deadline - time.monotonic())
+            if remaining <= 0:
+                budget_hit = True
+                _emit(
+                    f"page_skipped {context} host={source_host or 'unknown'} "
+                    f"page={page_number}/{page_limit} status=skipped_budget error=crawl_budget_reached"
+                )
+                break
+
+        page_started = time.monotonic()
+        pages_attempted += 1
+        _emit(
+            f"page_start {context} host={source_host or 'unknown'} "
+            f"page={page_number}/{page_limit}"
+        )
         try:
-            parsed_result = parse_listing(response.body, response.url)
-            if not parsed_result["recognized"]:
-                error = "unsupported_layout"
+            response = fetcher(page_url, total_timeout=remaining)
+        except FetchError as exc:
+            is_budget_timeout = (
+                crawl_deadline is not None
+                and time.monotonic() >= crawl_deadline
+                and exc.code == "deadline_exceeded"
+            )
+            if is_budget_timeout:
+                budget_hit = True
+            failure = {
+                "page": page_number,
+                "error": "crawl_budget_reached" if is_budget_timeout else exc.code,
+                "error_type": getattr(exc, "cause_type", None),
+                "http_status": getattr(exc, "http_status", None),
+            }
+            page_errors.append(failure)
+            _emit(
+                f"page_error {context} host={source_host or 'unknown'} page={page_number}/{page_limit} "
+                f"elapsed_seconds={time.monotonic() - page_started:.2f} "
+                f"status={'skipped_budget' if is_budget_timeout else 'offline'} "
+                f"http_status={failure['http_status']} error={failure['error']} "
+                f"error_type={failure['error_type']}"
+            )
+            if is_budget_timeout:
+                break
+            continue
         except Exception as exc:
-            error = "parser_error"
-            error_type = type(exc).__name__
+            failure = {
+                "page": page_number,
+                "error": "fetch_error",
+                "error_type": type(exc).__name__,
+                "http_status": None,
+            }
+            page_errors.append(failure)
+            _emit(
+                f"page_error {context} host={source_host or 'unknown'} page={page_number}/{page_limit} "
+                f"elapsed_seconds={time.monotonic() - page_started:.2f} status=offline "
+                "http_status=None error=fetch_error "
+                f"error_type={type(exc).__name__}"
+            )
+            continue
 
-    if error:
-        return {
-            "source_id": source_id,
-            "source_host": response_host or source_host,
-            "status": "unsupported" if error == "unsupported_layout" else "offline",
-            "error": error,
-            "error_type": error_type,
-            "pages_scanned": 1 if response_host else 0,
-            "records": [],
-            "parser": None,
-            "http_status": getattr(response, "status_code", None),
-        }
+        response_host = (urlparse(response.url).hostname or "").casefold()
+        last_http_status = getattr(response, "status_code", None)
+        scanned_pages += 1
+        if not response_host or response_host != source_host:
+            failure = {
+                "page": page_number,
+                "error": "redirect_host_changed" if response_host else "invalid_response_url",
+                "error_type": None,
+                "http_status": last_http_status,
+            }
+            page_errors.append(failure)
+            _emit(
+                f"page_error {context} host={source_host or 'unknown'} page={page_number}/{page_limit} "
+                f"elapsed_seconds={time.monotonic() - page_started:.2f} status=unsupported "
+                f"http_status={last_http_status} error={failure['error']} error_type=None"
+            )
+            continue
 
+        try:
+            parsed = parse_listing(response.body, response.url)
+            if not parsed.get("recognized"):
+                failure = {
+                    "page": page_number,
+                    "error": "unsupported_layout",
+                    "error_type": None,
+                    "http_status": last_http_status,
+                }
+                page_errors.append(failure)
+                _emit(
+                    f"page_error {context} host={source_host or 'unknown'} page={page_number}/{page_limit} "
+                    f"elapsed_seconds={time.monotonic() - page_started:.2f} status=unsupported "
+                    f"http_status={last_http_status} error=unsupported_layout error_type=None"
+                )
+                continue
+        except Exception as exc:
+            failure = {
+                "page": page_number,
+                "error": "parser_error",
+                "error_type": type(exc).__name__,
+                "http_status": last_http_status,
+            }
+            page_errors.append(failure)
+            _emit(
+                f"page_error {context} host={source_host or 'unknown'} page={page_number}/{page_limit} "
+                f"elapsed_seconds={time.monotonic() - page_started:.2f} status=offline "
+                f"http_status={last_http_status} error=parser_error error_type={type(exc).__name__}"
+            )
+            continue
+
+        records.extend(parsed.get("records", []))
+        parser_name = parsed.get("parser")
+        if parser_name and parser_name not in parsers:
+            parsers.append(parser_name)
+        for next_url in parsed.get("pagination_urls", []):
+            try:
+                canonical = _canonical_source_url(str(next_url))
+            except FetchError:
+                continue
+            if _same_source_host(canonical, normalized_source) and canonical not in queued_keys:
+                queued_keys.add(canonical)
+                pending_pages.append(canonical)
+        _emit(
+            f"page_complete {context} host={source_host or 'unknown'} page={page_number}/{page_limit} "
+            f"elapsed_seconds={time.monotonic() - page_started:.2f} status=ok "
+            f"http_status={last_http_status} records={len(parsed.get('records', []))}"
+        )
+
+    budget_hit = budget_hit or (
+        crawl_deadline is not None and time.monotonic() >= crawl_deadline and bool(pending_pages)
+    )
+    page_limit_reached = bool(pending_pages) and not budget_hit and pages_attempted >= page_limit
+    successful_pages = scanned_pages - sum(
+        1 for error in page_errors if error.get("error") in {"unsupported_layout", "parser_error", "redirect_host_changed", "invalid_response_url"}
+    )
+    unsupported_only = bool(page_errors) and all(
+        error.get("error") in {"unsupported_layout", "invalid_response_url", "redirect_host_changed"}
+        for error in page_errors
+    )
+
+    if budget_hit:
+        status = "partial" if successful_pages else "skipped_budget"
+        error = "crawl_budget_reached"
+    elif page_errors and successful_pages:
+        status = "partial"
+        error = "page_errors"
+    elif page_errors:
+        status = "unsupported" if unsupported_only else "offline"
+        error = str(page_errors[0].get("error") or "page_error")
+    else:
+        status = "ok"
+        error = None
+
+    error_types = sorted({str(item["error_type"]) for item in page_errors if item.get("error_type")})
     return {
         "source_id": source_id,
-        "source_host": response_host,
-        "status": "ok",
-        "error": None,
-        "error_type": None,
-        "pages_scanned": 1,
-        "records": _dedupe_records(parsed_result["records"]),
-        "parser": parsed_result.get("parser"),
-        "http_status": getattr(response, "status_code", None),
+        "source_host": source_host,
+        "status": status,
+        "error": error,
+        "error_type": ",".join(error_types) or None,
+        "pages_scanned": scanned_pages,
+        "records": _dedupe_records(records),
+        "parser": ",".join(parsers) or None,
+        "http_status": last_http_status,
+        "page_errors": page_errors,
+        "page_limit_reached": page_limit_reached,
     }
 
 def merge_source_result(
@@ -798,8 +925,8 @@ def merge_source_result(
             continue
         if sighting_id in current_ids:
             continue
-        # A one-page check cannot establish that a historical listing was
-        # removed, so absence from page one always remains unknown.
+        # The first 25 pages cannot establish that a historical listing was
+        # removed, so sightings missing from the checked pages remain unknown.
         sighting["listing_state"] = "unknown"
 
     return sorted(
@@ -856,7 +983,7 @@ def crawl_catalog(
     max_concurrency: int = MAX_CONCURRENCY,
     sleep=time.sleep,
 ) -> dict:
-    """Crawl active first-page sources, deduplicating URLs and retaining history."""
+    """Crawl active sources through at most their first 25 pages, retaining history."""
     groups = catalog.get("groups")
     if not isinstance(groups, list):
         raise ValueError("Group catalog has no groups list")
@@ -925,6 +1052,8 @@ def crawl_catalog(
                     "pages_scanned": 0,
                     "victims_found": 0,
                     "posts_review": 0,
+                    "page_errors": [],
+                    "page_limit_reached": False,
                     "error": None,
                     "watchguard_profile_url": str(group.get("profile_url") or ""),
                 }
@@ -947,6 +1076,8 @@ def crawl_catalog(
                     "pages_scanned": 0,
                     "victims_found": 0,
                     "posts_review": 0,
+                    "page_errors": [],
+                    "page_limit_reached": False,
                     "error": "missing_extortion_scope",
                     "watchguard_profile_url": str(group.get("profile_url") or ""),
                 }
@@ -971,6 +1102,8 @@ def crawl_catalog(
                     "pages_scanned": 0,
                     "records": [],
                     "parser": None,
+                    "page_errors": [],
+                    "page_limit_reached": False,
                 }
                 completed_at = utc_now()
                 sightings = merge_source_result(sightings, group, source, result, completed_at)
@@ -989,6 +1122,8 @@ def crawl_catalog(
                     "error": url_error,
                     "error_type": None,
                     "http_status": None,
+                    "page_errors": [],
+                    "page_limit_reached": False,
                     "watchguard_profile_url": str(group.get("profile_url") or ""),
                 }
                 _emit(
@@ -1013,17 +1148,31 @@ def crawl_catalog(
         f"active_groups={len(active_group_ids)} non_active_groups={len(inactive_group_ids)} "
         f"eligible_group_sources={active_assignment_count} unique_urls={unique_url_count} "
         f"workers={worker_count} fetch_deadline_seconds={fetch_deadline_seconds:g} "
+        f"pages_per_source={MAX_PAGES_PER_SOURCE} "
         f"crawl_budget_seconds={max(0.0, float(budget_seconds)):g}"
     )
 
     completed_unique = 0
+    crawl_pages_scanned = 0
     last_host_start: dict[str, float] = {}
+    next_host_request: dict[str, float] = {}
+    pacing_lock = Lock()
     in_flight: dict[Future, tuple[dict, float]] = {}
     budget_skipped: list[dict] = []
 
+    def pace_request(host: str) -> None:
+        with pacing_lock:
+            now = time.monotonic()
+            start_at = max(now, next_host_request.get(host, now))
+            next_host_request[host] = start_at + max(0.0, request_delay_seconds)
+        delay = start_at - now
+        if delay > 0:
+            sleep(delay)
+
     def store_completed(entry: dict, result: dict, started_at: float) -> None:
-        nonlocal sightings, completed_unique
+        nonlocal sightings, completed_unique, crawl_pages_scanned
         completed_unique += 1
+        crawl_pages_scanned += int(result.get("pages_scanned", 0) or 0)
         elapsed = time.monotonic() - started_at
         completed_at = utc_now()
         associations = entry["associations"]
@@ -1050,6 +1199,8 @@ def crawl_catalog(
                 "error": result.get("error"),
                 "error_type": result.get("error_type"),
                 "http_status": result.get("http_status"),
+                "page_errors": result.get("page_errors", []),
+                "page_limit_reached": result.get("page_limit_reached", False),
                 "watchguard_profile_url": str(group.get("profile_url") or ""),
             }
         detail = (
@@ -1064,6 +1215,7 @@ def crawl_catalog(
             f"group_ids={group_ids} source_ids={association_source_ids} host={entry['host'] or 'unknown'} "
             f"elapsed_seconds={elapsed:.2f} status={result['status']} {detail} "
             f"pages={result.get('pages_scanned', 0)} records={len(result.get('records', []))} "
+            f"page_limit_reached={str(result.get('page_limit_reached', False)).lower()} "
             f"victims={sum(item.get('post_type') == 'victim' for item in result.get('records', []))} "
             f"review={sum(item.get('post_type') != 'victim' for item in result.get('records', []))}"
         )
@@ -1102,8 +1254,13 @@ def crawl_catalog(
                 future = executor.submit(
                     crawl_site,
                     entry["url"],
+                    group_ids=[str(item["group"]["group_id"]) for item in entry["associations"]],
+                    source_ids=[str(item["source_id"]) for item in entry["associations"]],
                     fetcher=fetcher,
                     deadline_seconds=fetch_deadline_seconds,
+                    crawl_deadline=deadline,
+                    max_pages=MAX_PAGES_PER_SOURCE,
+                    request_pacer=pace_request,
                 )
                 in_flight[future] = (entry, started_at)
                 now = time.monotonic()
@@ -1133,6 +1290,7 @@ def crawl_catalog(
                             "error_type": type(exc).__name__, "http_status": None,
                             "pages_scanned": 0, "records": [], "parser": None,
                             "source_host": entry["host"],
+                            "page_errors": [], "page_limit_reached": False,
                         }
                     store_completed(entry, result, started_at)
             elif pending:
@@ -1140,7 +1298,10 @@ def crawl_catalog(
                 if delay > 0:
                     sleep(delay)
 
-    budget_exhausted = bool(budget_skipped)
+    budget_exhausted = bool(budget_skipped) or any(
+        source_id in current_source_ids and item.get("error") == "crawl_budget_reached"
+        for source_id, item in source_records.items()
+    )
     for entry in budget_skipped:
         for association in entry["associations"]:
             group = association["group"]
@@ -1161,15 +1322,22 @@ def crawl_catalog(
                 "error": None,
                 "error_type": None,
                 "http_status": None,
+                "page_errors": [],
+                "page_limit_reached": False,
                 "watchguard_profile_url": str(group.get("profile_url") or ""),
             }
             for sighting in sightings:
                 if sighting.get("source_id") == source_id:
                     sighting["listing_state"] = "unknown"
     if budget_exhausted:
+        interrupted_sources = sum(
+            source_id in current_source_ids and item.get("error") == "crawl_budget_reached"
+            for source_id, item in source_records.items()
+        )
         _emit(
             f"crawl_budget_exhausted completed_unique={completed_unique} "
             f"unique_urls={unique_url_count} skipped_unique={len(budget_skipped)} "
+            f"interrupted_sources={interrupted_sources} unique_pages_scanned={crawl_pages_scanned} "
             f"budget_seconds={max(0.0, float(budget_seconds)):g}"
         )
 
@@ -1178,6 +1346,11 @@ def crawl_catalog(
             continue
         source_record["status"] = "not_in_catalog"
         source_record["status_updated_at"] = utc_now()
+        source_record["pages_scanned"] = 0
+        source_record["victims_found"] = 0
+        source_record["posts_review"] = 0
+        source_record["page_errors"] = []
+        source_record["page_limit_reached"] = False
         source_records[source_id] = source_record
         for sighting in sightings:
             if sighting.get("source_id") == source_id:
@@ -1223,6 +1396,7 @@ def crawl_catalog(
         "crawl_elapsed_seconds": round(elapsed, 2),
         "crawl_budget_seconds": max(0, int(budget_seconds)),
         "crawl_partial": budget_exhausted,
+        "crawl_pages_scanned": crawl_pages_scanned,
         "source_catalog_updated_at": catalog.get("updated_at"),
         "groups": sorted(group_summaries, key=lambda item: item["name"].casefold()),
         "sources": sorted(source_records.values(), key=lambda item: (item["group_name"].casefold(), item["source_host"])),

@@ -70,20 +70,6 @@ a {
   font-size: 0.88rem;
 }
 
-.source-link {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.4rem;
-  color: #c4c4cb;
-  font-size: 0.79rem;
-  text-decoration: none;
-}
-
-.source-link:hover,
-.profile-link:hover {
-  color: var(--accent);
-}
-
 .page-shell {
   width: min(100% - 2.5rem, 1180px);
   margin: 0 auto;
@@ -415,6 +401,19 @@ tbody tr:hover {
   font-weight: 600;
 }
 
+.organization-name {
+  margin-bottom: 0.3rem;
+}
+
+.organization-cell details summary {
+  max-width: 190px;
+  color: #d1bafa;
+  cursor: pointer;
+  font-size: 0.68rem;
+  font-weight: 400;
+  line-height: 1.5;
+}
+
 .group-cell {
   min-width: 130px;
   color: #d3c5ed;
@@ -443,15 +442,6 @@ tbody tr:hover {
 .state-pill.unknown {
   background: rgba(255, 138, 138, 0.1);
   color: var(--red);
-}
-
-.profile-link {
-  display: inline-block;
-  margin-top: 0.18rem;
-  color: #9283aa;
-  font-size: 0.63rem;
-  font-weight: 400;
-  text-decoration: none;
 }
 
 td details summary {
@@ -505,6 +495,13 @@ td details summary {
   line-height: 1.55;
 }
 
+.listing-details-hint {
+  margin: 0.9rem 0 0;
+  color: #c3b2e4;
+  font-size: 0.74rem;
+  line-height: 1.55;
+}
+
 .site-footer {
   border-top: 1px solid rgba(255, 255, 255, 0.07);
   color: #777a83;
@@ -546,10 +543,6 @@ td details summary {
   .site-footer {
     padding-right: 1rem;
     padding-left: 1rem;
-  }
-
-  .source-link {
-    font-size: 0.7rem;
   }
 
   .page-shell {

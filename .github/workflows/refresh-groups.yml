@@ -1,4 +1,4 @@
-name: Refresh WatchGuard group catalog
+name: Refresh ransomware group catalog
 
 on:
   schedule:
@@ -9,7 +9,7 @@ permissions:
   contents: write
 
 concurrency:
-  group: refresh-watchguard-groups
+  group: refresh-ransomware-groups
   cancel-in-progress: false
 
 jobs:
@@ -39,6 +39,6 @@ jobs:
           if git diff --cached --quiet; then
             echo "Group catalog is unchanged."
           else
-            git commit -m "chore(data): refresh WatchGuard group catalog"
+            git commit -m "chore(data): refresh ransomware group catalog"
             git push
           fi
