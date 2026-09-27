@@ -11,6 +11,17 @@ Listings are claims published by threat actors. Seeing an organization here does
 - Headlines and ambiguous posts remain in the data but are not displayed in the dashboard or included in victim totals. Country values inferred from a leading flag are labeled as inferred.
 - Optional descriptions, claimed data size, file count, deadline, and organization website are collected only when explicitly shown on the listing. Those values are attributed to the threat actor and are not independently verified.
 
+## One-time historical import
+
+The historical importer accepts the archived `posts.json`-format file (the supplied copy may be named `posts.txt`). It previews the mapping by default; review that summary before applying it:
+
+~~~sh
+python scripts/import_historical_posts.py --input /path/to/posts.txt
+python scripts/import_historical_posts.py --input /path/to/posts.txt --apply
+~~~
+
+The upstream archive records a post title, group name, and discovery time, but no post-level source ID. The importer therefore collapses duplicates by current group and normalized organization name and assigns a stable local ID. It uses exact group names plus only the explicitly approved aliases, leaves unmatched groups out, and does not add the archive file to this repository. Imported-only sightings remain `unknown` until a later live crawl sees them.
+
 The victim crawler checks groups marked `active`, and up to the first 25 listing pages at each direct extortion endpoint. It requires the catalog's `leak_sites_scope` marker, so older catalogs are skipped until the group catalog refresh runs. A visible organization is marked `listed`; a historical organization not found in the first 25 pages remains `unknown`. Offline, unsupported, inactive, unscoped, removed, and time-budget-skipped sources also leave sightings `unknown`. Historical sightings are retained.
 
 The collectors use conservative HTML table and victim-card parsing. A site's layout may not be recognized; those sources are marked unsupported. Add a parser in scripts/scrape_victims.py when a site needs a specific layout adapter. The crawler deduplicates shared URLs, scans up to 25 pagination pages per source, uses at most three concurrent requests with a 25-second per-page fetch deadline and 90-minute crawl budget, restricts requests to HTTP(S) public hosts or `.onion` hosts, validates redirect targets, and caps response size. Progress and per-page errors are flushed to the Actions log. If the time budget is reached, completed sightings are saved and remaining pages or sources are reported as partial or skipped by the budget. Classification migration retains existing sighting IDs and observation history.

@@ -98,6 +98,12 @@
           </label>
         </div>
 
+        <nav id="table-pagination" class="table-pagination" aria-label="Victim claim pages" hidden>
+          <button id="previous-page" type="button">Previous</button>
+          <span id="page-status" aria-live="polite"></span>
+          <button id="next-page" type="button">Next</button>
+        </nav>
+
         <div id="loading-state" class="message-state" role="status">Loading victim data…</div>
         <div id="error-state" class="message-state error-state" role="alert" hidden>
           <strong>Victim data could not be loaded.</strong>

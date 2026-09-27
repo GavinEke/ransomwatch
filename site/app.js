@@ -10,6 +10,10 @@ const elements = {
   emptyTitle: document.querySelector("#empty-title"),
   emptyCopy: document.querySelector("#empty-copy"),
   tableWrap: document.querySelector("#table-wrap"),
+  pagination: document.querySelector("#table-pagination"),
+  previousPage: document.querySelector("#previous-page"),
+  nextPage: document.querySelector("#next-page"),
+  pageStatus: document.querySelector("#page-status"),
   rows: document.querySelector("#victim-rows"),
   search: document.querySelector("#search-input"),
   group: document.querySelector("#group-filter"),
@@ -27,6 +31,8 @@ const elements = {
 };
 
 let dataset = null;
+let currentPage = 1;
+const PAGE_SIZE = 100;
 
 function setText(element, value) {
   element.textContent = value == null || value === "" ? "—" : String(value);
@@ -202,10 +208,10 @@ function searchText(item) {
 }
 
 function sortTimestamp(item) {
-  const reported = Date.parse(item.reported_date || "");
-  if (Number.isFinite(reported)) return reported;
   const observed = Date.parse(item.last_seen_at || "");
-  return Number.isFinite(observed) ? observed : 0;
+  if (Number.isFinite(observed)) return observed;
+  const reported = Date.parse(item.reported_date || "");
+  return Number.isFinite(reported) ? reported : 0;
 }
 
 function addCell(row, className, text) {
@@ -311,8 +317,21 @@ function filteredSightings() {
 
 function renderTable() {
   const items = filteredSightings();
-  elements.rows.replaceChildren(...items.map(makeRow));
+  const pageCount = Math.max(1, Math.ceil(items.length / PAGE_SIZE));
+  currentPage = Math.min(currentPage, pageCount);
+  const startIndex = (currentPage - 1) * PAGE_SIZE;
+  const pageItems = items.slice(startIndex, startIndex + PAGE_SIZE);
+  elements.rows.replaceChildren(...pageItems.map(makeRow));
   elements.resultCount.textContent = items.length.toLocaleString() + " shown";
+  elements.pagination.hidden = items.length <= PAGE_SIZE;
+  elements.previousPage.disabled = currentPage <= 1;
+  elements.nextPage.disabled = currentPage >= pageCount;
+  const firstVisible = items.length ? startIndex + 1 : 0;
+  const lastVisible = Math.min(startIndex + PAGE_SIZE, items.length);
+  elements.pageStatus.textContent = items.length
+    ? "Page " + currentPage.toLocaleString() + " of " + pageCount.toLocaleString() +
+      " · showing " + firstVisible.toLocaleString() + "–" + lastVisible.toLocaleString()
+    : "";
   const hasData = victimSightings().length > 0;
   const hasFilters = Boolean(
     elements.search.value || elements.group.value || elements.country.value || elements.state.value,
@@ -349,8 +368,21 @@ async function loadData() {
 }
 
 for (const control of [elements.search, elements.group, elements.country, elements.state]) {
-  control.addEventListener("input", renderTable);
-  control.addEventListener("change", renderTable);
+  const resetPageAndRender = () => {
+    currentPage = 1;
+    renderTable();
+  };
+  control.addEventListener("input", resetPageAndRender);
+  control.addEventListener("change", resetPageAndRender);
 }
+
+elements.previousPage.addEventListener("click", () => {
+  currentPage = Math.max(1, currentPage - 1);
+  renderTable();
+});
+elements.nextPage.addEventListener("click", () => {
+  currentPage += 1;
+  renderTable();
+});
 
 loadData();

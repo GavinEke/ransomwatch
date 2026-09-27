@@ -603,21 +603,37 @@ def _matching_history(
     normalized_org = normalize_name(str(record.get("organization") or ""))
     normalized_title = normalize_name(str(record.get("post_title") or ""))
     matches: list[dict] = []
+    historical_matches: list[dict] = []
     for old in existing_by_id.values():
-        if old.get("group_id") != group_id or old.get("source_id") != source_id:
+        if old.get("group_id") != group_id:
             continue
+        same_source = old.get("source_id") == source_id
         old_record_id = clean_text(str(old.get("record_id") or ""))
-        if record_id and old_record_id and record_id.casefold() == old_record_id.casefold():
+        if same_source and record_id and old_record_id and record_id.casefold() == old_record_id.casefold():
             return old
-        if record_id and old_record_id:
-            continue
         old_org = normalize_name(str(old.get("organization") or ""))
-        old_title = normalize_name(str(old.get("post_title") or ""))
-        if normalized_org and old_org == normalized_org:
-            matches.append(old)
-        elif not normalized_org and normalized_title and old_title == normalized_title:
-            matches.append(old)
-    return matches[0] if len(matches) == 1 else None
+        if same_source:
+            if record_id and old_record_id:
+                continue
+            old_title = normalize_name(str(old.get("post_title") or ""))
+            if normalized_org and old_org == normalized_org:
+                matches.append(old)
+            elif not normalized_org and normalized_title and old_title == normalized_title:
+                matches.append(old)
+        elif isinstance(old.get("historical_import"), dict) and normalized_org and old_org == normalized_org:
+            # The one-off archive has no leak-site source ID. Once a later
+            # crawl sees the same group/organization, keep extending that
+            # stable historical record even if the live source URL differs.
+            historical_matches.append(old)
+    if len(matches) == 1:
+        return matches[0]
+    if historical_matches:
+        return sorted(
+            historical_matches,
+            key=lambda item: (str(item.get("last_seen_at") or ""), str(item.get("id") or "")),
+            reverse=True,
+        )[0]
+    return None
 
 
 def _dedupe_records(records: list[dict]) -> list[dict]:
@@ -920,6 +936,15 @@ def merge_source_result(
             "source_host": result.get("source_host") or "",
             "watchguard_profile_url": profile_url,
         }
+        historical_import = old.get("historical_import")
+        if isinstance(historical_import, dict):
+            matched_source_ids = list(historical_import.get("matched_source_ids") or [])
+            if source_id not in matched_source_ids:
+                matched_source_ids.append(source_id)
+            sighting["historical_import"] = {
+                **historical_import,
+                "matched_source_ids": sorted(set(str(item) for item in matched_source_ids)),
+            }
         if details:
             sighting["claim_details"] = details
         existing_by_id[sighting_id] = sighting
