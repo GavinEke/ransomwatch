@@ -18,46 +18,39 @@
     </header>
 
     <main class="page-shell">
-      <section class="intro">
-        <div class="eyebrow"><span class="live-dot"></span> PUBLIC THREAT INTELLIGENCE</div>
-        <h1>Victim claims,<br><span>tracked over time.</span></h1>
-        <p class="intro-copy">A record of organizations named on ransomware group leak sites, gathered from publicly available group and listing information.</p>
-        <p class="claim-note"><strong>Threat actor claims, not confirmation.</strong> Listings are claims published by threat actors. Seeing an organization here does not confirm that a data breach occurred or that data was stolen.</p>
-      </section>
+      <section class="hero-overview" aria-label="Dashboard overview">
+        <div class="intro">
+          <div class="eyebrow"><span class="live-dot"></span> PUBLIC THREAT INTELLIGENCE</div>
+          <h1>Victim claims,<br><span>tracked over time.</span></h1>
+          <p class="intro-copy">A record of organizations named on ransomware group leak sites, gathered from publicly available group and listing information.</p>
+          <p class="claim-note"><strong>Threat actor claims, not confirmation.</strong> Listings are claims published by threat actors. Seeing an organization here does not confirm that a data breach occurred or that data was stolen.</p>
+        </div>
 
-      <section class="metrics" aria-label="Dataset overview">
-        <article class="metric-card">
-          <span class="metric-label">Historical victim claims</span>
-          <strong id="metric-total">—</strong>
-          <span class="metric-foot">Across all tracked groups</span>
-        </article>
-        <article class="metric-card">
-          <span class="metric-label">Currently listed</span>
-          <strong id="metric-listed">—</strong>
-          <span class="metric-foot">On the latest successful crawl</span>
-        </article>
-        <article class="metric-card">
-          <span class="metric-label">Groups tracked</span>
-          <strong id="metric-groups">—</strong>
-          <span class="metric-foot">Across tracked groups</span>
-        </article>
-        <article class="metric-card">
-          <span class="metric-label">Sources tracked</span>
-          <strong id="metric-sources">—</strong>
-          <span class="metric-foot" id="coverage-caption">Coverage status</span>
-        </article>
-      </section>
-
-      <section class="coverage-panel" aria-labelledby="coverage-title">
-        <div class="coverage-heading">
-          <div>
-            <p class="eyebrow">COLLECTION HEALTH</p>
-            <h2 id="coverage-title">Source coverage</h2>
-          </div>
+        <div class="overview-stats">
+          <section class="metrics" aria-label="Dataset overview">
+            <article class="metric-card">
+              <span class="metric-label">Historical victim claims</span>
+              <strong id="metric-total">—</strong>
+              <span class="metric-foot">Across all tracked groups</span>
+            </article>
+            <article class="metric-card">
+              <span class="metric-label">Currently listed</span>
+              <strong id="metric-listed">—</strong>
+              <span class="metric-foot">On the latest successful crawl</span>
+            </article>
+            <article class="metric-card">
+              <span class="metric-label">Groups tracked</span>
+              <strong id="metric-groups">—</strong>
+              <span class="metric-foot">Across tracked groups</span>
+            </article>
+            <article class="metric-card">
+              <span class="metric-label">Sources tracked</span>
+              <strong id="metric-sources">—</strong>
+              <span class="metric-foot">Across tracked groups</span>
+            </article>
+          </section>
           <p id="updated-at" class="updated-at">Loading update time…</p>
         </div>
-        <p id="coverage-summary" class="coverage-summary">Loading crawl status…</p>
-        <div id="coverage-details" class="coverage-details" aria-live="polite"></div>
       </section>
 
       <section class="victims-section" aria-labelledby="victims-title">
@@ -116,11 +109,20 @@
 
         <div id="table-wrap" class="table-wrap" hidden>
           <table>
+            <colgroup>
+              <col class="organization-column">
+              <col class="group-column">
+              <col class="reported-column">
+              <col class="country-column">
+              <col class="sector-column">
+              <col class="observed-column">
+              <col class="state-column">
+            </colgroup>
             <thead>
               <tr>
                 <th scope="col">Organization</th>
                 <th scope="col">Group</th>
-                <th scope="col">Reported</th>
+                <th scope="col">Reported date</th>
                 <th scope="col">Country</th>
                 <th scope="col">Sector</th>
                 <th scope="col">Last observed</th>

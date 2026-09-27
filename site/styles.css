@@ -75,9 +75,16 @@ a {
   margin: 0 auto;
 }
 
-.intro {
-  max-width: 760px;
+.hero-overview {
+  display: grid;
+  grid-template-columns: minmax(0, 1.2fr) minmax(390px, 0.9fr);
+  align-items: center;
+  gap: clamp(2rem, 4vw, 4rem);
   padding: clamp(3rem, 7vw, 6.4rem) 0 2.6rem;
+}
+
+.intro {
+  min-width: 0;
 }
 
 .eyebrow {
@@ -155,13 +162,11 @@ h1 span {
 
 .metrics {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 0.8rem;
-  margin-bottom: 1rem;
 }
 
-.metric-card,
-.coverage-panel {
+.metric-card {
   border: 1px solid var(--line);
   border-radius: 0.8rem;
   background: linear-gradient(145deg, rgba(28, 30, 38, 0.94), rgba(18, 20, 25, 0.96));
@@ -191,12 +196,10 @@ h1 span {
   font-size: 0.67rem;
 }
 
-.coverage-panel {
-  margin-bottom: 4rem;
-  padding: 1.3rem 1.4rem;
+.overview-stats {
+  min-width: 0;
 }
 
-.coverage-heading,
 .section-heading {
   display: flex;
   align-items: end;
@@ -204,14 +207,12 @@ h1 span {
   gap: 1rem;
 }
 
-.coverage-heading h2,
 .section-heading h2 {
   margin: 0;
   font-size: 1.28rem;
   letter-spacing: -0.045em;
 }
 
-.coverage-heading .eyebrow,
 .section-heading .eyebrow {
   margin-bottom: 0.4rem;
 }
@@ -224,19 +225,6 @@ h1 span {
   font-size: 0.67rem;
 }
 
-.coverage-summary {
-  margin: 1rem 0 0.75rem;
-  color: #c2c3ca;
-  font-size: 0.82rem;
-}
-
-.coverage-details {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 0.45rem;
-}
-
-.coverage-chip,
 .state-pill {
   display: inline-flex;
   align-items: center;
@@ -248,10 +236,9 @@ h1 span {
   font-size: 0.66rem;
 }
 
-.coverage-chip strong {
-  color: var(--ink);
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-weight: 500;
+.updated-at {
+  margin-top: 0.8rem;
+  text-align: right;
 }
 
 .victims-section {
@@ -378,6 +365,7 @@ h1 span {
 
 .table-wrap {
   overflow-x: auto;
+  max-width: 100%;
   border: 1px solid var(--line);
   border-radius: 0.8rem;
   background: rgba(18, 20, 25, 0.8);
@@ -385,9 +373,18 @@ h1 span {
 
 table {
   width: 100%;
+  table-layout: fixed;
   border-collapse: collapse;
   text-align: left;
 }
+
+.organization-column { width: 27%; }
+.group-column { width: 14%; }
+.reported-column { width: 12%; }
+.country-column { width: 10%; }
+.sector-column { width: 14%; }
+.observed-column { width: 12%; }
+.state-column { width: 11%; }
 
 th {
   padding: 0.75rem 0.8rem;
@@ -398,15 +395,17 @@ th {
   font-weight: 400;
   letter-spacing: 0.05em;
   text-transform: uppercase;
-  white-space: nowrap;
+  overflow-wrap: anywhere;
 }
 
 td {
+  min-width: 0;
   padding: 0.83rem 0.8rem;
   border-top: 1px solid rgba(255, 255, 255, 0.055);
   color: #b5b7c0;
   font-size: 0.75rem;
   vertical-align: top;
+  overflow-wrap: anywhere;
 }
 
 tbody tr:hover {
@@ -414,7 +413,6 @@ tbody tr:hover {
 }
 
 .organization-cell {
-  min-width: 180px;
   color: #f0eff4;
   font-weight: 600;
 }
@@ -424,7 +422,7 @@ tbody tr:hover {
 }
 
 .organization-cell details summary {
-  max-width: 190px;
+  max-width: 100%;
   color: #d1bafa;
   cursor: pointer;
   font-size: 0.68rem;
@@ -433,18 +431,17 @@ tbody tr:hover {
 }
 
 .group-cell {
-  min-width: 130px;
   color: #d3c5ed;
 }
 
 .date-cell {
-  min-width: 120px;
-  white-space: nowrap;
+  white-space: normal;
 }
 
 .state-pill {
   border-color: transparent;
-  white-space: nowrap;
+  white-space: normal;
+  overflow-wrap: normal;
 }
 
 .state-pill.listed {
@@ -471,7 +468,7 @@ td details summary {
 
 .claim-details-list {
   margin: 0.65rem 0 0;
-  min-width: 180px;
+  min-width: 0;
 }
 
 .claim-details-list dt {
@@ -536,12 +533,25 @@ td details summary {
 }
 
 @media (max-width: 860px) {
+  .hero-overview {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 1.8rem;
+  }
+
+  .updated-at {
+    text-align: left;
+  }
+
   .metrics {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
   .filters {
     grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
+  table {
+    min-width: 760px;
   }
 
   .search-field {
@@ -560,8 +570,13 @@ td details summary {
     width: min(100% - 2rem, 1180px);
   }
 
-  .intro {
+  .hero-overview {
     padding-top: 3rem;
+    padding-bottom: 2rem;
+  }
+
+  .intro {
+    padding: 0;
   }
 
   .metrics {
@@ -575,16 +590,6 @@ td details summary {
 
   .metric-card strong {
     font-size: 1.55rem;
-  }
-
-  .coverage-panel {
-    margin-bottom: 3rem;
-    padding: 1rem;
-  }
-
-  .coverage-heading {
-    align-items: start;
-    flex-direction: column;
   }
 
   .filters {

@@ -24,10 +24,7 @@ const elements = {
   listed: document.querySelector("#metric-listed"),
   groups: document.querySelector("#metric-groups"),
   sources: document.querySelector("#metric-sources"),
-  coverageCaption: document.querySelector("#coverage-caption"),
   updated: document.querySelector("#updated-at"),
-  coverageSummary: document.querySelector("#coverage-summary"),
-  coverageDetails: document.querySelector("#coverage-details"),
 };
 
 let dataset = null;
@@ -58,10 +55,6 @@ function stateLabel(state) {
     not_seen: "No longer seen",
     unknown: "Unknown / stale",
   }[normalizedState(state)];
-}
-
-function sourceCount(status) {
-  return (dataset?.sources || []).filter((source) => source.status === status).length;
 }
 
 function usableOrganizationName(value) {
@@ -111,72 +104,14 @@ function renderMetrics() {
   const sightings = victimSightings();
   const listedCount = sightings.filter((item) => normalizedState(item.listing_state) === "listed").length;
   const sourceTotal = (dataset.sources || []).length;
-  const sourceOk = sourceCount("ok");
-  const pagesScanned = Number.isFinite(Number(dataset.crawl_pages_scanned))
-    ? Number(dataset.crawl_pages_scanned)
-    : (dataset.sources || []).reduce((count, source) => count + (Number(source.pages_scanned) || 0), 0);
-  const pageLimitReached = (dataset.sources || []).filter((source) => source.page_limit_reached).length;
-  const skippedInactive = sourceCount("skipped_inactive");
-  const skippedRemoved = sourceCount("not_in_catalog");
-  const skippedUnscoped = sourceCount("skipped_unscoped_catalog");
-  const skippedBudget = sourceCount("skipped_budget");
-  const partialBudgetSources = (dataset.sources || []).filter(
-    (source) => source.status === "partial" && source.error === "crawl_budget_reached",
-  ).length;
-  const skippedTotal = skippedInactive + skippedRemoved + skippedUnscoped + skippedBudget;
-  const checkedTotal = Math.max(0, sourceTotal - skippedTotal);
-  const failedTotal = Math.max(0, checkedTotal - sourceOk);
-  const catalogIssues = (dataset.groups || []).filter((group) => group.source_issue && group.source_issue !== "ok").length;
   const groupCount = (dataset.groups || []).length;
   setText(elements.total, sightings.length.toLocaleString());
   setText(elements.listed, listedCount.toLocaleString());
   setText(elements.groups, groupCount.toLocaleString());
   setText(elements.sources, sourceTotal.toLocaleString());
-  setText(elements.coverageCaption, checkedTotal + " checked · " + skippedTotal + " skipped");
   elements.updated.textContent = dataset.updated_at
     ? "Last crawl " + displayDate(dataset.updated_at, true) + " UTC"
     : "No crawl has completed yet";
-
-  const statusCounts = new Map();
-  for (const source of dataset.sources || []) {
-    const status = source.status || "unknown";
-    statusCounts.set(status, (statusCounts.get(status) || 0) + 1);
-  }
-  elements.coverageSummary.textContent = sourceTotal
-    ? sourceOk + " of " + checkedTotal + " checked sources completed the scan (up to 25 pages); " +
-      failedTotal + " need attention; " + skippedBudget + " skipped by the time budget; " +
-      partialBudgetSources + " source(s) had their page scan stopped by the time budget; " +
-      skippedInactive + " skipped because the group is not active; " + skippedUnscoped +
-      " skipped until the catalog is refreshed; " + skippedRemoved + " no longer in the catalog." +
-      " " + pagesScanned.toLocaleString() + " unique listing pages scanned; " +
-      pageLimitReached.toLocaleString() + " source(s) reached the 25-page cap." +
-      (catalogIssues ? " " + catalogIssues + " group catalog issue(s) were reported." : "") +
-      (dataset.crawl_partial ? " This crawl is partial; skipped sightings remain unknown." : "")
-    : "No direct leak-site sources are present in the latest group catalog.";
-  elements.coverageDetails.replaceChildren();
-
-  const displayOrder = [
-    "ok", "partial", "offline", "unsupported", "skipped_budget", "skipped_inactive",
-    "skipped_unscoped_catalog", "not_in_catalog",
-  ];
-  for (const status of displayOrder) {
-    const count = statusCounts.get(status) || 0;
-    if (!count) continue;
-    const chip = document.createElement("span");
-    chip.className = "coverage-chip";
-    const number = document.createElement("strong");
-    number.textContent = String(count);
-    chip.append(number, document.createTextNode(" " + status.replaceAll("_", " ")));
-    elements.coverageDetails.append(chip);
-  }
-  if (pagesScanned) {
-    const chip = document.createElement("span");
-    chip.className = "coverage-chip";
-    const number = document.createElement("strong");
-    number.textContent = pagesScanned.toLocaleString();
-    chip.append(number, document.createTextNode(" unique listing pages scanned"));
-    elements.coverageDetails.append(chip);
-  }
 }
 
 function populateFilters() {
@@ -207,11 +142,55 @@ function searchText(item) {
   ].filter(Boolean).join(" ").toLocaleLowerCase();
 }
 
-function sortTimestamp(item) {
-  const observed = Date.parse(item.last_seen_at || "");
-  if (Number.isFinite(observed)) return observed;
-  const reported = Date.parse(item.reported_date || "");
-  return Number.isFinite(reported) ? reported : 0;
+function parseSortDate(value) {
+  if (typeof value !== "string" || !value.trim()) return null;
+  const text = value.trim();
+  const months = new Map([
+    ["jan", 0], ["january", 0], ["feb", 1], ["february", 1],
+    ["mar", 2], ["march", 2], ["apr", 3], ["april", 3],
+    ["may", 4], ["jun", 5], ["june", 5], ["jul", 6], ["july", 6],
+    ["aug", 7], ["august", 7], ["sep", 8], ["sept", 8], ["september", 8],
+    ["oct", 9], ["october", 9], ["nov", 10], ["november", 10],
+    ["dec", 11], ["december", 11],
+  ]);
+  const monthDate = text.match(/^(\d{1,2})\s+([a-z]+)[,.]?\s+(\d{4})$/i)
+    || text.match(/^([a-z]+)\s+(\d{1,2})[,]?\s+(\d{4})$/i);
+  if (monthDate) {
+    const dayFirst = /^\d/.test(monthDate[1]);
+    const day = Number(dayFirst ? monthDate[1] : monthDate[2]);
+    const month = months.get((dayFirst ? monthDate[2] : monthDate[1]).toLocaleLowerCase());
+    const year = Number(monthDate[3]);
+    if (month === undefined || day < 1 || day > 31) return null;
+    const timestamp = Date.UTC(year, month, day);
+    const date = new Date(timestamp);
+    return date.getUTCFullYear() === year && date.getUTCMonth() === month && date.getUTCDate() === day
+      ? timestamp
+      : null;
+  }
+
+  const parsed = Date.parse(text);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function claimTimestamp(item) {
+  const timestamp = parseSortDate(item.reported_date) ?? parseSortDate(item.first_seen_at);
+  if (timestamp === null) return 0;
+  const date = new Date(timestamp);
+  return Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate());
+}
+
+function compareSightings(left, right) {
+  const dateOrder = claimTimestamp(right) - claimTimestamp(left);
+  if (dateOrder) return dateOrder;
+  const organizationOrder = displayedOrganization(left).localeCompare(
+    displayedOrganization(right), undefined, { sensitivity: "base", numeric: true },
+  );
+  if (organizationOrder) return organizationOrder;
+  const groupOrder = String(left.group_name || "").localeCompare(
+    String(right.group_name || ""), undefined, { sensitivity: "base", numeric: true },
+  );
+  if (groupOrder) return groupOrder;
+  return String(left.id || "").localeCompare(String(right.id || ""));
 }
 
 function addCell(row, className, text) {
@@ -312,7 +291,7 @@ function filteredSightings() {
     .filter((item) => !group || item.group_id === group)
     .filter((item) => !country || item.country === country)
     .filter((item) => !state || normalizedState(item.listing_state) === state)
-    .sort((left, right) => sortTimestamp(right) - sortTimestamp(left));
+    .sort(compareSightings);
 }
 
 function renderTable() {
